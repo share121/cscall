@@ -1,10 +1,9 @@
-use tokio::task::JoinHandle;
-
 use crate::{client::ClientError, crypt::Crypt};
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
+use tokio::task::JoinHandle;
 
 pub mod client;
 pub mod crypt;
