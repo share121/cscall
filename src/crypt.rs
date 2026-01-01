@@ -1,11 +1,27 @@
-pub trait Crypt<const SALT_LEN: usize, const KEY_LEN: usize>: Send + Sync + 'static {
+pub trait ByteArray:
+    AsRef<[u8]> + AsMut<[u8]> + Default + Send + Sync + 'static + Clone + std::fmt::Debug
+{
+}
+impl<T> ByteArray for T where
+    T: AsRef<[u8]> + AsMut<[u8]> + Default + Send + Sync + 'static + Clone + std::fmt::Debug
+{
+}
+
+pub trait Crypt: Send + Sync + 'static {
+    const SALT_LEN: usize;
+    const KEY_LEN: usize;
+    const ADDITION_LEN: usize;
+
+    type Salt: ByteArray;
+    type Key: ByteArray;
+
     type Error: Send + 'static;
-    fn new(key: &[u8]) -> Result<Self, Self::Error>
+    fn new(key: &Self::Key) -> Result<Self, Self::Error>
     where
         Self: Sized;
-    fn mix_salt(salt_a: &[u8], salt_b: &[u8]) -> Result<[u8; SALT_LEN], Self::Error>;
-    fn gen_salt() -> [u8; SALT_LEN];
-    fn derive_key(pwd: &[u8], salt: &[u8]) -> Result<[u8; KEY_LEN], Self::Error>;
+    fn mix_salt(salt_a: &Self::Salt, salt_b: &Self::Salt) -> Result<Self::Salt, Self::Error>;
+    fn gen_salt() -> Self::Salt;
+    fn derive_key(pwd: &[u8], salt: &Self::Salt) -> Result<Self::Key, Self::Error>;
     fn encrypt(&self, associated_data: &[u8], data: &mut Vec<u8>) -> Result<(), Self::Error>;
     fn decrypt(&self, associated_data: &[u8], data: &mut Vec<u8>) -> Result<(), Self::Error>;
 }
