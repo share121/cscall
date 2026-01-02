@@ -1,16 +1,15 @@
-use crate::{
-    HEARTBEAT_MS,
-    connection::Connection,
-    crypt::Crypt,
-    package::{DecodeError, PackageEncoder},
-};
-use std::{sync::Mutex, time::Duration};
+use std::sync::Mutex;
+
+use crate::{connection::Connection, crypt::Crypt, package::PackageEncoder};
 use tokio::net::UdpSocket;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CsError {
+    // IO
     #[error("Failed to send data")]
     Socket(#[from] std::io::Error),
+
+    // 加解密
     #[error("Failed to mix salt")]
     MixSalt,
     #[error("Failed to derive key")]
@@ -19,59 +18,48 @@ pub enum CsError {
     CreateCrypt,
     #[error("Failed to generate UID")]
     GenerateUID(#[from] rand::rand_core::OsError),
-    #[error("Failed to decode data {0:?}")]
-    Decode(#[from] DecodeError),
     #[error("Failed to encrypt data")]
     Encrypt,
     #[error("Failed to decrypt data")]
     Decrypt,
-    #[error("Invalid format")]
-    InvalidFormat,
+
+    // 连接
     #[error("Connection broken")]
     ConnectionBroken,
+
+    // 消息解码
+    #[error("Invalid type")]
+    InvalidType,
+    #[error("Invalid format")]
+    InvalidFormat,
     #[error("Invalid uid")]
     InvalidUid,
     #[error("Invalid counter")]
     InvalidCounter,
     #[error("Invalid timestamp")]
     InvalidTimestamp(u64),
+
+    // 系统
     #[error("System time error")]
     SystemTime(#[from] std::time::SystemTimeError),
 }
 
-pub async fn heartbeat<C: Crypt>(conn: &Mutex<Option<Connection<C>>>, socket: &UdpSocket) {
-    loop {
-        tokio::time::sleep(Duration::from_millis(HEARTBEAT_MS)).await;
-        let (session_crypt, count, uid) = {
-            let mut guard = match conn.lock() {
-                Ok(g) => g,
-                Err(e) => {
-                    tracing::warn!("Connection broken Error: {:?}", e);
-                    return;
-                }
-            };
-            let guard_ref = match guard.as_mut() {
-                Some(g) => g,
-                None => {
-                    tracing::warn!("Connection broken");
-                    return;
-                }
-            };
-            if guard_ref.life == 0 {
-                *guard = None;
-                tracing::warn!("Connection life expired");
-                return;
-            }
-            guard_ref.life -= 1;
-            guard_ref.pre_encrypt()
-        };
-        match PackageEncoder::heartbeat(&*session_crypt, count, &uid) {
-            Ok(data) => {
-                if let Err(e) = socket.send(&data.to_vec()).await {
-                    tracing::warn!("Failed to send heartbeat packet: {:?}", e);
-                }
-            }
-            Err(_) => tracing::warn!("Failed to encrypt heartbeat packet"),
+pub async fn heartbeat<C: Crypt>(
+    conn: &Mutex<Option<Connection<C>>>,
+    socket: &UdpSocket,
+) -> Result<(), CsError> {
+    let (session_crypt, count, uid, addr) = {
+        let mut guard = conn.lock().map_err(|_| CsError::ConnectionBroken)?;
+        let guard_ref = guard.as_mut().ok_or(CsError::ConnectionBroken)?;
+        if guard_ref.life == 0 {
+            *guard = None;
+            tracing::warn!("Connection life expired");
+            return Err(CsError::ConnectionBroken);
         }
-    }
+        guard_ref.life -= 1;
+        guard_ref.pre_encrypt()
+    };
+    let data = PackageEncoder::heartbeat(&*session_crypt, count, &uid)?;
+    socket.send_to(&data.to_vec(), addr).await?;
+    Ok(())
 }

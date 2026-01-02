@@ -1,4 +1,4 @@
-use crate::{COUNT_LEN, EventType, TIMESTAMP_LEN, UID_LEN, crypt::Crypt};
+use crate::{COUNT_LEN, EventType, TIMESTAMP_LEN, UID_LEN, common::CsError, crypt::Crypt};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct PackageEncoder;
@@ -9,10 +9,12 @@ impl PackageEncoder {
         session_crypt: &C,
         count: u64,
         uid: &[u8; UID_LEN],
-    ) -> Result<(), C::Error> {
+    ) -> Result<(), CsError> {
         buf.reserve(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
         buf.extend_from_slice(&count.to_le_bytes());
-        session_crypt.encrypt(uid, buf)?;
+        session_crypt
+            .encrypt(uid, buf)
+            .map_err(|_| CsError::Encrypt)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::Encrypted);
         Ok(())
@@ -38,7 +40,7 @@ impl PackageEncoder {
         server_crypt: &C,
         session_key: &C::Key,
         uid: &[u8; UID_LEN],
-    ) -> Result<Vec<u8>, C::Error> {
+    ) -> Result<Vec<u8>, CsError> {
         let mut buf =
             Vec::with_capacity(C::KEY_LEN + TIMESTAMP_LEN + UID_LEN + C::ADDITION_LEN + 1);
         buf.extend_from_slice(session_key.as_ref());
@@ -48,7 +50,9 @@ impl PackageEncoder {
             .as_secs();
         buf.extend_from_slice(&timestamp.to_le_bytes());
         buf.extend_from_slice(uid);
-        server_crypt.encrypt(&[], &mut buf)?;
+        server_crypt
+            .encrypt(&[], &mut buf)
+            .map_err(|_| CsError::Encrypt)?;
         buf.push(EventType::Connect);
         Ok(buf)
     }
@@ -57,10 +61,12 @@ impl PackageEncoder {
     pub fn ack_connect<C: Crypt>(
         session_crypt: &C,
         uid: &[u8; UID_LEN],
-    ) -> Result<Vec<u8>, C::Error> {
+    ) -> Result<Vec<u8>, CsError> {
         let mut buf = Vec::with_capacity(UID_LEN + C::ADDITION_LEN + 1);
         buf.extend_from_slice(uid);
-        session_crypt.encrypt(&[], &mut buf)?;
+        session_crypt
+            .encrypt(&[], &mut buf)
+            .map_err(|_| CsError::Encrypt)?;
         buf.push(EventType::AckConnect);
         Ok(buf)
     }
@@ -70,10 +76,12 @@ impl PackageEncoder {
         session_crypt: &C,
         count: u64,
         uid: &[u8; UID_LEN],
-    ) -> Result<Vec<u8>, C::Error> {
+    ) -> Result<Vec<u8>, CsError> {
         let mut buf = Vec::with_capacity(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
         buf.extend_from_slice(&count.to_le_bytes());
-        session_crypt.encrypt(uid, &mut buf)?;
+        session_crypt
+            .encrypt(uid, &mut buf)
+            .map_err(|_| CsError::Encrypt)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::Heartbeat);
         Ok(buf)
@@ -84,10 +92,12 @@ impl PackageEncoder {
         session_crypt: &C,
         count: u64,
         uid: &[u8; UID_LEN],
-    ) -> Result<Vec<u8>, C::Error> {
+    ) -> Result<Vec<u8>, CsError> {
         let mut buf = Vec::with_capacity(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
         buf.extend_from_slice(&count.to_le_bytes());
-        session_crypt.encrypt(uid, &mut buf)?;
+        session_crypt
+            .encrypt(uid, &mut buf)
+            .map_err(|_| CsError::Encrypt)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::AckHeartbeat);
         Ok(buf)
@@ -96,9 +106,9 @@ impl PackageEncoder {
 
 pub struct PackageDecoder;
 impl PackageDecoder {
-    pub fn peek_uid(buf: &[u8], offset: usize) -> Result<[u8; UID_LEN], DecodeError> {
+    pub fn peek_uid(buf: &[u8], offset: usize) -> Result<[u8; UID_LEN], CsError> {
         if buf.len() < UID_LEN + offset {
-            return Err(DecodeError::InvalidFormat);
+            return Err(CsError::InvalidFormat);
         }
         let uid_start = buf.len() - UID_LEN - offset;
         let uid: [u8; UID_LEN] = buf[uid_start..uid_start + UID_LEN].try_into().unwrap();
@@ -111,15 +121,15 @@ impl PackageDecoder {
     pub fn encrypted<C: Crypt>(
         session_crypt: &C,
         buf: &mut Vec<u8>,
-    ) -> Result<(u64, [u8; UID_LEN]), DecodeError> {
+    ) -> Result<(u64, [u8; UID_LEN]), CsError> {
         if matches!(
             buf.last(),
             Some(&EventType::Encrypted | &EventType::Heartbeat | &EventType::AckHeartbeat)
         ) {
-            return Err(DecodeError::InvalidType);
+            return Err(CsError::InvalidType);
         }
         if buf.len() < COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1 {
-            return Err(DecodeError::InvalidFormat);
+            return Err(CsError::InvalidFormat);
         }
         buf.pop();
 
@@ -130,7 +140,7 @@ impl PackageDecoder {
 
         session_crypt
             .decrypt(&uid, buf)
-            .map_err(|_| DecodeError::CryptError)?;
+            .map_err(|_| CsError::Decrypt)?;
 
         // 解析 Count
         let count_start = buf.len() - COUNT_LEN;
@@ -141,25 +151,25 @@ impl PackageDecoder {
     }
 
     /// 63个0 + Hello
-    pub fn hello(buf: &[u8]) -> Result<(), DecodeError> {
+    pub fn hello(buf: &[u8]) -> Result<(), CsError> {
         if buf.last() != Some(&EventType::Hello) {
-            return Err(DecodeError::InvalidType);
+            return Err(CsError::InvalidType);
         }
         if buf[..buf.len() - 1] == [0; 63] {
             Ok(())
         } else {
-            Err(DecodeError::InvalidFormat)
+            Err(CsError::InvalidFormat)
         }
     }
 
     /// ServerSalt + AckHello
     /// Return ServerSalt
-    pub fn ack_hello<C: Crypt>(buf: &[u8]) -> Result<C::Salt, DecodeError> {
+    pub fn ack_hello<C: Crypt>(buf: &[u8]) -> Result<C::Salt, CsError> {
         if buf.last() != Some(&EventType::AckHello) {
-            return Err(DecodeError::InvalidType);
+            return Err(CsError::InvalidType);
         }
         if buf.len() != C::SALT_LEN + 1 {
-            return Err(DecodeError::InvalidFormat);
+            return Err(CsError::InvalidFormat);
         }
         let mut salt = C::Salt::default();
         salt.as_mut().copy_from_slice(&buf[..C::SALT_LEN]);
@@ -172,17 +182,17 @@ impl PackageDecoder {
     pub fn connect<C: Crypt>(
         server_crypt: &C,
         buf: &mut Vec<u8>,
-    ) -> Result<(u64, [u8; UID_LEN]), DecodeError> {
+    ) -> Result<(u64, [u8; UID_LEN]), CsError> {
         if buf.last() != Some(&EventType::Connect) {
-            return Err(DecodeError::InvalidType);
+            return Err(CsError::InvalidType);
         }
         if buf.len() != C::KEY_LEN + TIMESTAMP_LEN + UID_LEN + C::ADDITION_LEN + 1 {
-            return Err(DecodeError::InvalidFormat);
+            return Err(CsError::InvalidFormat);
         }
         buf.pop();
         server_crypt
             .decrypt(&[], buf)
-            .map_err(|_| DecodeError::CryptError)?;
+            .map_err(|_| CsError::Decrypt)?;
         // 结构: [SessionKey] [TimeStamp] [Uid]
         // 提取 Uid
         let uid_start = buf.len() - UID_LEN;
@@ -202,28 +212,18 @@ impl PackageDecoder {
     pub fn ack_connect<C: Crypt>(
         session_crypt: &C,
         buf: &mut Vec<u8>,
-    ) -> Result<[u8; UID_LEN], DecodeError> {
+    ) -> Result<[u8; UID_LEN], CsError> {
         if buf.last() != Some(&EventType::AckConnect) {
-            return Err(DecodeError::InvalidType);
+            return Err(CsError::InvalidType);
         }
         if buf.len() != UID_LEN + C::ADDITION_LEN + 1 {
-            return Err(DecodeError::InvalidFormat);
+            return Err(CsError::InvalidFormat);
         }
         buf.pop();
         session_crypt
             .decrypt(&[], buf)
-            .map_err(|_| DecodeError::CryptError)?;
+            .map_err(|_| CsError::Decrypt)?;
         let uid: [u8; UID_LEN] = buf[..].try_into().unwrap();
         Ok(uid)
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum DecodeError {
-    #[error("加密失败")]
-    CryptError,
-    #[error("格式错误")]
-    InvalidFormat,
-    #[error("无效的类型")]
-    InvalidType,
 }

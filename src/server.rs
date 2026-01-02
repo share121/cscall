@@ -1,24 +1,29 @@
 use crate::{
-    EventType, MAX_LIFE, UID_LEN,
+    EventType, HEARTBEAT_MS, MAX_LIFE, UID_LEN,
     common::{CsError, heartbeat},
-    connection::Connection,
+    connection::{Connection, ConnectionMut},
     crypt::Crypt,
     package::{PackageDecoder, PackageEncoder},
 };
 use dashmap::DashMap;
 use std::{
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::net::UdpSocket;
-
-pub type Connections<C> = Arc<DashMap<[u8; UID_LEN], Arc<Mutex<Option<Connection<C>>>>>>;
 
 pub struct Server<C: Crypt> {
     socket: Arc<UdpSocket>,
     server_crypt: C,
     server_salt: C::Salt,
-    connections: Connections<C>,
+    connections: Arc<DashMap<[u8; UID_LEN], ConnectionMut<C>>>,
+    heartbeat_handle: tokio::task::JoinHandle<()>,
+}
+
+impl<C: Crypt> Drop for Server<C> {
+    fn drop(&mut self) {
+        self.heartbeat_handle.abort();
+    }
 }
 
 impl<C: Crypt> Server<C> {
@@ -26,11 +31,33 @@ impl<C: Crypt> Server<C> {
         let server_salt = C::gen_salt();
         let server_key = C::derive_key(pwd, &server_salt).map_err(|_| CsError::DeriveKey)?;
         let server_crypt = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypt)?;
+        let connections: Arc<DashMap<[u8; UID_LEN], ConnectionMut<C>>> = Arc::new(DashMap::new());
+        let heartbeat_handle = tokio::spawn({
+            let connections = connections.clone();
+            let socket = socket.clone();
+            async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(HEARTBEAT_MS)).await;
+                    let mut dead = Vec::new();
+                    for conn in connections.iter() {
+                        match heartbeat(&conn, &socket).await {
+                            Ok(()) => {}
+                            Err(CsError::ConnectionBroken) => dead.push(*conn.key()),
+                            Err(e) => tracing::warn!("未知错误 {e:?}"),
+                        }
+                    }
+                    for uid in dead {
+                        connections.remove(&uid);
+                    }
+                }
+            }
+        });
         Ok(Self {
             socket,
             server_crypt,
             server_salt,
-            connections: Arc::new(DashMap::new()),
+            connections,
+            heartbeat_handle,
         })
     }
 
@@ -84,20 +111,6 @@ impl<C: Crypt> Server<C> {
                     replay_bitmap: 0,
                     heartbeat_handle: None,
                 })));
-                let heartbeat_handle = tokio::spawn({
-                    let conn = conn.clone();
-                    let socket = self.socket.clone();
-                    let connections = self.connections.clone();
-                    async move {
-                        heartbeat(&conn, &socket).await;
-                        connections.remove(&uid);
-                    }
-                });
-                conn.lock()
-                    .map_err(|_| CsError::ConnectionBroken)?
-                    .as_mut()
-                    .ok_or(CsError::ConnectionBroken)?
-                    .heartbeat_handle = Some(heartbeat_handle);
                 self.connections.insert(uid, conn);
                 Ok(false)
             }
@@ -123,15 +136,15 @@ impl<C: Crypt> Server<C> {
                     .map_err(|_| CsError::ConnectionBroken)?
                     .as_mut()
                     .ok_or(CsError::ConnectionBroken)?
-                    .check_and_update(count, uid, None)?;
+                    .check_and_update(count, uid, Some(addr))?;
                 match event_type {
                     EventType::Encrypted => Ok(true),
                     EventType::Heartbeat => {
                         tracing::info!("Received heartbeat Request");
-                        let (session_crypt, count, uid) = Connection::try_pre_encrypt(&conn)?;
+                        let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&conn)?;
                         let data = PackageEncoder::heartbeat(&*session_crypt, count, &uid)
                             .map_err(|_| CsError::Decrypt)?;
-                        self.socket.send(&data).await?;
+                        self.socket.send_to(&data, addr).await?;
                         Ok(false)
                     }
                     EventType::AckHeartbeat => {
@@ -146,5 +159,30 @@ impl<C: Crypt> Server<C> {
                 Err(CsError::InvalidFormat)
             }
         }
+    }
+
+    pub async fn get(&self, uid: &[u8; UID_LEN]) -> Result<Channel<C>, CsError> {
+        Ok(Channel {
+            conn: self
+                .connections
+                .get(uid)
+                .ok_or(CsError::ConnectionBroken)?
+                .clone(),
+            socket: self.socket.clone(),
+        })
+    }
+}
+
+pub struct Channel<C: Crypt> {
+    conn: ConnectionMut<C>,
+    socket: Arc<UdpSocket>,
+}
+
+impl<C: Crypt> Channel<C> {
+    pub async fn send(&self, buf: &mut Vec<u8>) -> Result<(), CsError> {
+        let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&self.conn)?;
+        PackageEncoder::encrypted(buf, &*session_crypt, count, &uid)?;
+        self.socket.send_to(buf, addr).await?;
+        Ok(())
     }
 }

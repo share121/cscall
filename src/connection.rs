@@ -5,6 +5,8 @@ use std::{
 };
 use tokio::task::JoinHandle;
 
+pub type ConnectionMut<C> = Arc<Mutex<Option<Connection<C>>>>;
+
 pub struct Connection<C: Crypt> {
     pub addr: SocketAddr,
     pub count: u64,
@@ -26,16 +28,16 @@ impl<C: Crypt> Drop for Connection<C> {
 
 impl<C: Crypt> Connection<C> {
     /// Return: (session_crypt, count, uid)
-    pub fn pre_encrypt(&mut self) -> (Arc<C>, u64, [u8; UID_LEN]) {
+    pub fn pre_encrypt(&mut self) -> (Arc<C>, u64, [u8; UID_LEN], SocketAddr) {
         let count = self.count;
         self.count += 1;
-        (self.session_crypt.clone(), count, self.uid)
+        (self.session_crypt.clone(), count, self.uid, self.addr)
     }
 
     /// Return: (session_crypt, count, uid)
     pub fn try_pre_encrypt(
         conn: &Mutex<Option<Self>>,
-    ) -> Result<(Arc<C>, u64, [u8; UID_LEN]), CsError> {
+    ) -> Result<(Arc<C>, u64, [u8; UID_LEN], SocketAddr), CsError> {
         conn.lock()
             .map_err(|_| CsError::ConnectionBroken)?
             .as_mut()

@@ -1,7 +1,7 @@
 use crate::{
-    EventType, MAX_LIFE, UID_LEN,
+    EventType, HEARTBEAT_MS, MAX_LIFE, UID_LEN,
     common::{CsError, heartbeat},
-    connection::Connection,
+    connection::{Connection, ConnectionMut},
     crypt::Crypt,
     package::{PackageDecoder, PackageEncoder},
 };
@@ -17,12 +17,12 @@ pub struct Client<C: Crypt> {
     pub socket: Arc<UdpSocket>,
     pwd: std::vec::Vec<u8>,
     addr: SocketAddr,
-    conn: Arc<Mutex<Option<Connection<C>>>>,
+    conn: ConnectionMut<C>,
 }
 
 impl<C: Crypt> Client<C> {
     pub async fn connect(
-        conn: Arc<Mutex<Option<Connection<C>>>>,
+        conn: ConnectionMut<C>,
         socket: Arc<UdpSocket>,
         pwd: &[u8],
         addr: SocketAddr,
@@ -107,7 +107,16 @@ impl<C: Crypt> Client<C> {
         let heartbeat_handle = tokio::spawn({
             let conn = conn.clone();
             let socket = socket.clone();
-            async move { heartbeat(&conn, &socket).await }
+            async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(HEARTBEAT_MS)).await;
+                    match heartbeat(&conn, &socket).await {
+                        Ok(()) => {}
+                        Err(CsError::ConnectionBroken) => break,
+                        Err(e) => tracing::warn!("未知错误 {e:?}"),
+                    }
+                }
+            }
         });
         conn.lock()
             .map_err(|_| CsError::ConnectionBroken)?
@@ -136,10 +145,10 @@ impl<C: Crypt> Client<C> {
     }
 
     pub async fn send(&self, buf: &mut Vec<u8>) -> Result<(), CsError> {
-        let (session_crypt, count, uid) = Connection::try_pre_encrypt(&self.conn)?;
+        let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&self.conn)?;
         PackageEncoder::encrypted(buf, &*session_crypt, count, &uid)
             .map_err(|_| CsError::Encrypt)?;
-        self.socket.send(buf).await?;
+        self.socket.send_to(buf, addr).await?;
         Ok(())
     }
 
@@ -176,10 +185,11 @@ impl<C: Crypt> Client<C> {
                     EventType::Encrypted => Ok(true),
                     EventType::Heartbeat => {
                         tracing::info!("Received heartbeat Request");
-                        let (session_crypt, count, uid) = Connection::try_pre_encrypt(&self.conn)?;
+                        let (session_crypt, count, uid, addr) =
+                            Connection::try_pre_encrypt(&self.conn)?;
                         let data = PackageEncoder::heartbeat(&*session_crypt, count, &uid)
                             .map_err(|_| CsError::Decrypt)?;
-                        self.socket.send(&data).await?;
+                        self.socket.send_to(&data, addr).await?;
                         Ok(false)
                     }
                     EventType::AckHeartbeat => {
