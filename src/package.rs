@@ -12,8 +12,11 @@ impl PackageEncoder {
     ) -> Result<(), CsError> {
         buf.reserve(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
         buf.extend_from_slice(&count.to_le_bytes());
+        let mut associated_data = [0; UID_LEN + 1];
+        associated_data[..UID_LEN].copy_from_slice(uid);
+        associated_data[UID_LEN] = EventType::Encrypted;
         session_crypt
-            .encrypt(uid, buf)
+            .encrypt(&associated_data, buf)
             .map_err(|_| CsError::Encrypt)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::Encrypted);
@@ -51,7 +54,7 @@ impl PackageEncoder {
         buf.extend_from_slice(&timestamp.to_le_bytes());
         buf.extend_from_slice(uid);
         server_crypt
-            .encrypt(&[], &mut buf)
+            .encrypt(&[EventType::Connect], &mut buf)
             .map_err(|_| CsError::Encrypt)?;
         buf.push(EventType::Connect);
         Ok(buf)
@@ -65,7 +68,7 @@ impl PackageEncoder {
         let mut buf = Vec::with_capacity(UID_LEN + C::ADDITION_LEN + 1);
         buf.extend_from_slice(uid);
         session_crypt
-            .encrypt(&[], &mut buf)
+            .encrypt(&[EventType::AckConnect], &mut buf)
             .map_err(|_| CsError::Encrypt)?;
         buf.push(EventType::AckConnect);
         Ok(buf)
@@ -79,8 +82,11 @@ impl PackageEncoder {
     ) -> Result<Vec<u8>, CsError> {
         let mut buf = Vec::with_capacity(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
         buf.extend_from_slice(&count.to_le_bytes());
+        let mut associated_data = [0; UID_LEN + 1];
+        associated_data[..UID_LEN].copy_from_slice(uid);
+        associated_data[UID_LEN] = EventType::Heartbeat;
         session_crypt
-            .encrypt(uid, &mut buf)
+            .encrypt(&associated_data, &mut buf)
             .map_err(|_| CsError::Encrypt)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::Heartbeat);
@@ -95,8 +101,11 @@ impl PackageEncoder {
     ) -> Result<Vec<u8>, CsError> {
         let mut buf = Vec::with_capacity(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
         buf.extend_from_slice(&count.to_le_bytes());
+        let mut associated_data = [0; UID_LEN + 1];
+        associated_data[..UID_LEN].copy_from_slice(uid);
+        associated_data[UID_LEN] = EventType::AckHeartbeat;
         session_crypt
-            .encrypt(uid, &mut buf)
+            .encrypt(&associated_data, &mut buf)
             .map_err(|_| CsError::Encrypt)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::AckHeartbeat);
@@ -122,7 +131,7 @@ impl PackageDecoder {
         session_crypt: &C,
         buf: &mut Vec<u8>,
     ) -> Result<(u64, [u8; UID_LEN]), CsError> {
-        if matches!(
+        if !matches!(
             buf.last(),
             Some(&EventType::Encrypted | &EventType::Heartbeat | &EventType::AckHeartbeat)
         ) {
@@ -131,15 +140,18 @@ impl PackageDecoder {
         if buf.len() < COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1 {
             return Err(CsError::InvalidFormat);
         }
-        buf.pop();
+        let event_type = buf.pop().unwrap();
 
         // 提取 Uid (外部)
         let uid_start = buf.len() - UID_LEN;
         let uid: [u8; UID_LEN] = buf[uid_start..].try_into().unwrap();
         buf.truncate(uid_start);
 
+        let mut associated_data = [0; UID_LEN + 1];
+        associated_data[..UID_LEN].copy_from_slice(&uid);
+        associated_data[UID_LEN] = event_type;
         session_crypt
-            .decrypt(&uid, buf)
+            .decrypt(&associated_data, buf)
             .map_err(|_| CsError::Decrypt)?;
 
         // 解析 Count
@@ -191,7 +203,7 @@ impl PackageDecoder {
         }
         buf.pop();
         server_crypt
-            .decrypt(&[], buf)
+            .decrypt(&[EventType::Connect], buf)
             .map_err(|_| CsError::Decrypt)?;
         // 结构: [SessionKey] [TimeStamp] [Uid]
         // 提取 Uid
@@ -221,7 +233,7 @@ impl PackageDecoder {
         }
         buf.pop();
         session_crypt
-            .decrypt(&[], buf)
+            .decrypt(&[EventType::AckConnect], buf)
             .map_err(|_| CsError::Decrypt)?;
         let uid: [u8; UID_LEN] = buf[..].try_into().unwrap();
         Ok(uid)

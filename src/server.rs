@@ -91,7 +91,7 @@ impl<C: Crypto> Server<C> {
                 buf.truncate(len);
                 let (old, uid) = PackageDecoder::connect(&self.server_crypt, buf)?;
                 let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-                if old.max(now) - old.min(now) > 60 {
+                if old.abs_diff(now) > 60 {
                     return Err(CsError::InvalidTimestamp(old));
                 }
                 if let Ok(session_crypt) = self
