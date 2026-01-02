@@ -1,7 +1,7 @@
 pub mod client;
 pub mod common;
 pub mod connection;
-pub mod crypt;
+pub mod crypto;
 pub mod package;
 pub mod server;
 

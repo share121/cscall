@@ -1,10 +1,10 @@
-use crate::{COUNT_LEN, EventType, TIMESTAMP_LEN, UID_LEN, common::CsError, crypt::Crypt};
+use crate::{COUNT_LEN, EventType, TIMESTAMP_LEN, UID_LEN, common::CsError, crypto::Crypto};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct PackageEncoder;
 impl PackageEncoder {
     /// SessionKey(PlainText + Count) + Uid + Encrypted
-    pub fn encrypted<C: Crypt>(
+    pub fn encrypted<C: Crypto>(
         buf: &mut Vec<u8>,
         session_crypt: &C,
         count: u64,
@@ -28,7 +28,7 @@ impl PackageEncoder {
     }
 
     /// ServerSalt + AckHello
-    pub fn ack_hello<C: Crypt>(server_salt: &C::Salt) -> Vec<u8> {
+    pub fn ack_hello<C: Crypto>(server_salt: &C::Salt) -> Vec<u8> {
         let mut buf = Vec::with_capacity(C::SALT_LEN + 1);
         buf.extend_from_slice(server_salt.as_ref());
         buf.push(EventType::AckHello);
@@ -36,7 +36,7 @@ impl PackageEncoder {
     }
 
     /// ServerKey(SessionKey + TimeStamp + Uid) + Connect
-    pub fn connect<C: Crypt>(
+    pub fn connect<C: Crypto>(
         server_crypt: &C,
         session_key: &C::Key,
         uid: &[u8; UID_LEN],
@@ -58,7 +58,7 @@ impl PackageEncoder {
     }
 
     /// SessionKey(Uid) + AckConnect
-    pub fn ack_connect<C: Crypt>(
+    pub fn ack_connect<C: Crypto>(
         session_crypt: &C,
         uid: &[u8; UID_LEN],
     ) -> Result<Vec<u8>, CsError> {
@@ -72,7 +72,7 @@ impl PackageEncoder {
     }
 
     /// SessionKey(Count) + Uid + Heartbeat
-    pub fn heartbeat<C: Crypt>(
+    pub fn heartbeat<C: Crypto>(
         session_crypt: &C,
         count: u64,
         uid: &[u8; UID_LEN],
@@ -88,7 +88,7 @@ impl PackageEncoder {
     }
 
     /// SessionKey(Count) + Uid + AckHeartbeat
-    pub fn ack_heartbeat<C: Crypt>(
+    pub fn ack_heartbeat<C: Crypto>(
         session_crypt: &C,
         count: u64,
         uid: &[u8; UID_LEN],
@@ -118,7 +118,7 @@ impl PackageDecoder {
     /// SessionKey(PlainText + Count) + Uid + Encrypted|Heartbeat|AckHeartbeat
     /// Plaintext 留在 buf 中
     /// Return: (Count, Uid)
-    pub fn encrypted<C: Crypt>(
+    pub fn encrypted<C: Crypto>(
         session_crypt: &C,
         buf: &mut Vec<u8>,
     ) -> Result<(u64, [u8; UID_LEN]), CsError> {
@@ -164,7 +164,7 @@ impl PackageDecoder {
 
     /// ServerSalt + AckHello
     /// Return ServerSalt
-    pub fn ack_hello<C: Crypt>(buf: &[u8]) -> Result<C::Salt, CsError> {
+    pub fn ack_hello<C: Crypto>(buf: &[u8]) -> Result<C::Salt, CsError> {
         if buf.last() != Some(&EventType::AckHello) {
             return Err(CsError::InvalidType);
         }
@@ -179,7 +179,7 @@ impl PackageDecoder {
     /// ServerKey(SessionKey + TimeStamp + Uid) + Connect
     /// SessionKey 留在 buf 中
     /// Return: (TimeStamp, Uid)
-    pub fn connect<C: Crypt>(
+    pub fn connect<C: Crypto>(
         server_crypt: &C,
         buf: &mut Vec<u8>,
     ) -> Result<(u64, [u8; UID_LEN]), CsError> {
@@ -209,7 +209,7 @@ impl PackageDecoder {
 
     /// SessionKey(Uid) + AckConnect
     /// Return: Uid
-    pub fn ack_connect<C: Crypt>(
+    pub fn ack_connect<C: Crypto>(
         session_crypt: &C,
         buf: &mut Vec<u8>,
     ) -> Result<[u8; UID_LEN], CsError> {

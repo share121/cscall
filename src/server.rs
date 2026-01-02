@@ -2,7 +2,7 @@ use crate::{
     EventType, HEARTBEAT_MS, MAX_LIFE, UID_LEN,
     common::{CsError, heartbeat},
     connection::{Connection, ConnectionMut},
-    crypt::Crypt,
+    crypto::Crypto,
     package::{PackageDecoder, PackageEncoder},
 };
 use dashmap::DashMap;
@@ -12,7 +12,7 @@ use std::{
 };
 use tokio::net::UdpSocket;
 
-pub struct Server<C: Crypt> {
+pub struct Server<C: Crypto> {
     socket: Arc<UdpSocket>,
     server_crypt: C,
     server_salt: C::Salt,
@@ -20,17 +20,17 @@ pub struct Server<C: Crypt> {
     heartbeat_handle: tokio::task::JoinHandle<()>,
 }
 
-impl<C: Crypt> Drop for Server<C> {
+impl<C: Crypto> Drop for Server<C> {
     fn drop(&mut self) {
         self.heartbeat_handle.abort();
     }
 }
 
-impl<C: Crypt> Server<C> {
+impl<C: Crypto> Server<C> {
     pub fn new(pwd: &[u8], socket: Arc<UdpSocket>) -> Result<Self, CsError> {
-        let server_salt = C::gen_salt();
+        let server_salt = C::gen_salt().map_err(|_| CsError::GenerateSalt)?;
         let server_key = C::derive_key(pwd, &server_salt).map_err(|_| CsError::DeriveKey)?;
-        let server_crypt = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypt)?;
+        let server_crypt = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
         let connections: Arc<DashMap<[u8; UID_LEN], ConnectionMut<C>>> = Arc::new(DashMap::new());
         let heartbeat_handle = tokio::spawn({
             let connections = connections.clone();
@@ -98,7 +98,7 @@ impl<C: Crypt> Server<C> {
                     self.socket.send_to(&data, addr).await?;
                     return Ok(false);
                 }
-                let session_crypt = C::new(buf).map_err(|_| CsError::CreateCrypt)?;
+                let session_crypt = C::new(buf).map_err(|_| CsError::CreateCrypto)?;
                 let data = PackageEncoder::ack_connect(&session_crypt, &uid)?;
                 self.socket.send_to(&data, addr).await?;
                 let conn = Arc::new(Mutex::new(Some(Connection {
@@ -170,12 +170,12 @@ impl<C: Crypt> Server<C> {
     }
 }
 
-pub struct Channel<C: Crypt> {
+pub struct Channel<C: Crypto> {
     conn: ConnectionMut<C>,
     socket: Arc<UdpSocket>,
 }
 
-impl<C: Crypt> Channel<C> {
+impl<C: Crypto> Channel<C> {
     pub async fn send(&self, buf: &mut Vec<u8>) -> Result<(), CsError> {
         let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&self.conn)?;
         PackageEncoder::encrypted(buf, &*session_crypt, count, &uid)?;

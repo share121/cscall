@@ -2,7 +2,7 @@ use crate::{
     EventType, HEARTBEAT_MS, MAX_LIFE, UID_LEN,
     common::{CsError, heartbeat},
     connection::{Connection, ConnectionMut},
-    crypt::Crypt,
+    crypto::Crypto,
     package::{PackageDecoder, PackageEncoder},
 };
 use rand::{TryRngCore, rngs::OsRng};
@@ -13,7 +13,7 @@ use std::{
 };
 use tokio::{net::UdpSocket, task::JoinHandle};
 
-pub struct Client<C: Crypt> {
+pub struct Client<C: Crypto> {
     pub socket: Arc<UdpSocket>,
     pwd: std::vec::Vec<u8>,
     addr: SocketAddr,
@@ -21,13 +21,13 @@ pub struct Client<C: Crypt> {
     heartbeat_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
-impl<C: Crypt> Drop for Client<C> {
+impl<C: Crypto> Drop for Client<C> {
     fn drop(&mut self) {
         self.close();
     }
 }
 
-impl<C: Crypt> Client<C> {
+impl<C: Crypto> Client<C> {
     pub async fn connect(
         conn: ConnectionMut<C>,
         socket: Arc<UdpSocket>,
@@ -60,7 +60,7 @@ impl<C: Crypt> Client<C> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         // 混合 client_salt 和 server_salt 并生成 session_crypt 和 server_crypt
-        let client_salt = C::gen_salt();
+        let client_salt = C::gen_salt().map_err(|_| CsError::GenerateSalt)?;
         let mix_salt = C::mix_salt(&server_salt, &client_salt).map_err(|_| CsError::MixSalt)?;
         let session_key = tokio::task::spawn_blocking({
             let pwd = pwd.to_vec();
@@ -74,8 +74,8 @@ impl<C: Crypt> Client<C> {
             tokio::try_join!(session_key, server_key).map_err(|_| CsError::DeriveKey)?;
         let session_key = session_key.map_err(|_| CsError::DeriveKey)?;
         let server_key = server_key.map_err(|_| CsError::DeriveKey)?;
-        let session_crypt = C::new(session_key.as_ref()).map_err(|_| CsError::CreateCrypt)?;
-        let server_crypt = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypt)?;
+        let session_crypt = C::new(session_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
+        let server_crypt = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
         // 发送 Connect 请求，并使用 server_crypt 加密，服务器返回的数据用 session_crypt 验证 AckConnect
         let mut uid = [0u8; UID_LEN];
         OsRng.try_fill_bytes(&mut uid)?;

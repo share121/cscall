@@ -1,4 +1,4 @@
-use crate::{MAX_LIFE, REORDER_WINDOW, UID_LEN, common::CsError, crypt::Crypt};
+use crate::{MAX_LIFE, REORDER_WINDOW, UID_LEN, common::CsError, crypto::Crypto};
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -6,7 +6,7 @@ use std::{
 
 pub type ConnectionMut<C> = Arc<Mutex<Option<Connection<C>>>>;
 
-pub struct Connection<C: Crypt> {
+pub struct Connection<C: Crypto> {
     pub addr: SocketAddr,
     pub count: u64,
     pub session_crypt: Arc<C>,
@@ -16,7 +16,7 @@ pub struct Connection<C: Crypt> {
     pub replay_bitmap: u128,
 }
 
-impl<C: Crypt> Connection<C> {
+impl<C: Crypto> Connection<C> {
     /// Return: (session_crypt, count, uid)
     pub fn pre_encrypt(&mut self) -> (Arc<C>, u64, [u8; UID_LEN], SocketAddr) {
         let count = self.count;

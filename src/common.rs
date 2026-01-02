@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use crate::{connection::Connection, crypt::Crypt, package::PackageEncoder};
+use crate::{connection::Connection, crypto::Crypto, package::PackageEncoder};
 use tokio::net::UdpSocket;
 
 #[derive(Debug, thiserror::Error)]
@@ -14,14 +14,16 @@ pub enum CsError {
     MixSalt,
     #[error("Failed to derive key")]
     DeriveKey,
-    #[error("Failed to create crypt")]
-    CreateCrypt,
+    #[error("Failed to create crypto")]
+    CreateCrypto,
     #[error("Failed to generate UID")]
     GenerateUID(#[from] rand::rand_core::OsError),
     #[error("Failed to encrypt data")]
     Encrypt,
     #[error("Failed to decrypt data")]
     Decrypt,
+    #[error("Failed to generate salt")]
+    GenerateSalt,
 
     // 连接
     #[error("Connection broken")]
@@ -44,7 +46,7 @@ pub enum CsError {
     SystemTime(#[from] std::time::SystemTimeError),
 }
 
-pub async fn heartbeat<C: Crypt>(
+pub async fn heartbeat<C: Crypto>(
     conn: &Mutex<Option<Connection<C>>>,
     socket: &UdpSocket,
 ) -> Result<(), CsError> {
