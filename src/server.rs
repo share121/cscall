@@ -61,7 +61,7 @@ impl<C: Crypto> Server<C> {
         })
     }
 
-    pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<bool, CsError> {
+    pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<Option<[u8; UID_LEN]>, CsError> {
         if buf.capacity() < 1500 {
             buf.reserve(1500 - buf.len());
         }
@@ -75,7 +75,7 @@ impl<C: Crypto> Server<C> {
                 PackageDecoder::hello(&buf[..len])?;
                 let data = PackageEncoder::ack_hello::<C>(&self.server_salt);
                 self.socket.send_to(&data, addr).await?;
-                Ok(false)
+                Ok(None)
             }
             EventType::Connect => {
                 buf.truncate(len);
@@ -96,7 +96,7 @@ impl<C: Crypto> Server<C> {
                 {
                     let data = PackageEncoder::ack_connect(&*session_crypt, &uid)?;
                     self.socket.send_to(&data, addr).await?;
-                    return Ok(false);
+                    return Ok(None);
                 }
                 let session_crypt = C::new(buf).map_err(|_| CsError::CreateCrypto)?;
                 let data = PackageEncoder::ack_connect(&session_crypt, &uid)?;
@@ -111,7 +111,7 @@ impl<C: Crypto> Server<C> {
                     replay_bitmap: 0,
                 })));
                 self.connections.insert(uid, conn);
-                Ok(false)
+                Ok(None)
             }
             event_type
             @ (EventType::Encrypted | EventType::Heartbeat | EventType::AckHeartbeat) => {
@@ -136,17 +136,17 @@ impl<C: Crypto> Server<C> {
                     .ok_or(CsError::ConnectionBroken)?
                     .check_and_update(count, uid, Some(addr))?;
                 match event_type {
-                    EventType::Encrypted => Ok(true),
+                    EventType::Encrypted => Ok(Some(uid)),
                     EventType::Heartbeat => {
                         tracing::info!("Received heartbeat Request");
                         let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&conn)?;
                         let data = PackageEncoder::ack_heartbeat(&*session_crypt, count, &uid)?;
                         self.socket.send_to(&data, addr).await?;
-                        Ok(false)
+                        Ok(None)
                     }
                     EventType::AckHeartbeat => {
                         tracing::info!("Received heartbeat ACK");
-                        Ok(false)
+                        Ok(None)
                     }
                     _ => Err(CsError::InvalidFormat),
                 }
