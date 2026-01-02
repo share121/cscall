@@ -11,13 +11,20 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::net::UdpSocket;
+use tokio::{net::UdpSocket, task::JoinHandle};
 
 pub struct Client<C: Crypt> {
     pub socket: Arc<UdpSocket>,
     pwd: std::vec::Vec<u8>,
     addr: SocketAddr,
     conn: ConnectionMut<C>,
+    heartbeat_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl<C: Crypt> Drop for Client<C> {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 impl<C: Crypt> Client<C> {
@@ -26,23 +33,29 @@ impl<C: Crypt> Client<C> {
         socket: Arc<UdpSocket>,
         pwd: &[u8],
         addr: SocketAddr,
-    ) -> Result<(), CsError> {
+    ) -> Result<JoinHandle<()>, CsError> {
         let mut buf = vec![0u8; 1500];
         // 发送 Hello 直到服务器回应 AckHello 并解析 server_salt
         let server_salt: C::Salt = loop {
             match socket.send(&PackageEncoder::hello()).await {
                 Err(e) => tracing::warn!("Failed to send Hello: {e:?}"),
-                Ok(_) => match socket.recv(&mut buf).await {
-                    Err(e) => tracing::warn!("Failed to receive AckHello: {e:?}"),
-                    Ok(len) => match PackageDecoder::ack_hello::<C>(&buf[..len]) {
-                        Ok(s) => break s,
-                        Err(e) => tracing::warn!(
-                            "Expected AckHello but received: {:?} Error: {:?}",
-                            &buf[..len],
-                            e
-                        ),
-                    },
-                },
+                Ok(_) => {
+                    if buf.capacity() < 1500 {
+                        buf.reserve(1500 - buf.len());
+                    }
+                    unsafe { buf.set_len(1500) };
+                    match socket.recv(&mut buf).await {
+                        Err(e) => tracing::warn!("Failed to receive AckHello: {e:?}"),
+                        Ok(len) => match PackageDecoder::ack_hello::<C>(&buf[..len]) {
+                            Ok(s) => break s,
+                            Err(e) => tracing::warn!(
+                                "Expected AckHello but received: {:?} Error: {:?}",
+                                &buf[..len],
+                                e
+                            ),
+                        },
+                    }
+                }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
@@ -67,27 +80,34 @@ impl<C: Crypt> Client<C> {
         let mut uid = [0u8; UID_LEN];
         OsRng.try_fill_bytes(&mut uid)?;
         loop {
-            let data = PackageEncoder::connect(&server_crypt, &session_key, &uid)
-                .map_err(|_| CsError::Encrypt)?;
+            let data = PackageEncoder::connect(&server_crypt, &session_key, &uid)?;
             match socket.send(&data).await {
                 Err(e) => tracing::warn!("Failed to send Connect: {e:?}"),
-                Ok(_) => match socket.recv(&mut buf).await {
-                    Err(e) => tracing::warn!("Failed to receive AckConnect: {e:?}"),
-                    Ok(len) => {
-                        buf.truncate(len);
-                        match PackageDecoder::ack_connect(&session_crypt, &mut buf) {
-                            Ok(uid) if buf == uid => break,
-                            Ok(uid) => {
-                                tracing::warn!("Received AckConnect but uid is not same: {uid:?}")
-                            }
-                            Err(e) => tracing::warn!(
-                                "Expected AckConnect but received: {:?} Error: {:?}",
-                                &buf,
-                                e
-                            ),
-                        };
+                Ok(_) => {
+                    if buf.capacity() < 1500 {
+                        buf.reserve(1500 - buf.len());
                     }
-                },
+                    unsafe { buf.set_len(1500) };
+                    match socket.recv(&mut buf).await {
+                        Err(e) => tracing::warn!("Failed to receive AckConnect: {e:?}"),
+                        Ok(len) => {
+                            buf.truncate(len);
+                            match PackageDecoder::ack_connect(&session_crypt, &mut buf) {
+                                Ok(uid) if buf == uid => break,
+                                Ok(uid) => {
+                                    tracing::warn!(
+                                        "Received AckConnect but uid is not same: {uid:?}"
+                                    )
+                                }
+                                Err(e) => tracing::warn!(
+                                    "Expected AckConnect but received: {:?} Error: {:?}",
+                                    &buf,
+                                    e
+                                ),
+                            };
+                        }
+                    }
+                }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -99,7 +119,6 @@ impl<C: Crypt> Client<C> {
             life: MAX_LIFE,
             max_count: 0,
             replay_bitmap: 0,
-            heartbeat_handle: None,
         };
         conn.lock()
             .map_err(|_| CsError::ConnectionBroken)?
@@ -118,36 +137,40 @@ impl<C: Crypt> Client<C> {
                 }
             }
         });
-        conn.lock()
-            .map_err(|_| CsError::ConnectionBroken)?
-            .as_mut()
-            .ok_or(CsError::ConnectionBroken)?
-            .heartbeat_handle = Some(heartbeat_handle);
-        Ok(())
+        Ok(heartbeat_handle)
     }
 
     pub async fn new(pwd: std::vec::Vec<u8>, addr: SocketAddr) -> Result<Self, CsError> {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
         socket.connect(addr).await?;
         let conn = Arc::new(Mutex::new(None));
-        Self::connect(conn.clone(), socket.clone(), &pwd, addr).await?;
+        let handle = Self::connect(conn.clone(), socket.clone(), &pwd, addr).await?;
         Ok(Self {
             socket,
             pwd,
             addr,
             conn,
+            heartbeat_handle: Mutex::new(Some(handle)),
         })
     }
 
+    pub fn close(&self) {
+        if let Some(heartbeat_handle) = self.heartbeat_handle.lock().unwrap().take() {
+            heartbeat_handle.abort();
+        }
+    }
+
     pub async fn reconnect(&self) -> Result<(), CsError> {
-        Self::connect(self.conn.clone(), self.socket.clone(), &self.pwd, self.addr).await?;
+        self.close();
+        let handle =
+            Self::connect(self.conn.clone(), self.socket.clone(), &self.pwd, self.addr).await?;
+        self.heartbeat_handle.lock().unwrap().replace(handle);
         Ok(())
     }
 
     pub async fn send(&self, buf: &mut Vec<u8>) -> Result<(), CsError> {
         let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&self.conn)?;
-        PackageEncoder::encrypted(buf, &*session_crypt, count, &uid)
-            .map_err(|_| CsError::Encrypt)?;
+        PackageEncoder::encrypted(buf, &*session_crypt, count, &uid)?;
         self.socket.send_to(buf, addr).await?;
         Ok(())
     }
@@ -173,8 +196,7 @@ impl<C: Crypt> Client<C> {
                     .ok_or(CsError::ConnectionBroken)?
                     .session_crypt
                     .clone();
-                let (count, uid) = PackageDecoder::encrypted(&*session_crypt, buf)
-                    .map_err(|_| CsError::Decrypt)?;
+                let (count, uid) = PackageDecoder::encrypted(&*session_crypt, buf)?;
                 self.conn
                     .lock()
                     .map_err(|_| CsError::ConnectionBroken)?
@@ -187,8 +209,7 @@ impl<C: Crypt> Client<C> {
                         tracing::info!("Received heartbeat Request");
                         let (session_crypt, count, uid, addr) =
                             Connection::try_pre_encrypt(&self.conn)?;
-                        let data = PackageEncoder::heartbeat(&*session_crypt, count, &uid)
-                            .map_err(|_| CsError::Decrypt)?;
+                        let data = PackageEncoder::ack_heartbeat(&*session_crypt, count, &uid)?;
                         self.socket.send_to(&data, addr).await?;
                         Ok(false)
                     }

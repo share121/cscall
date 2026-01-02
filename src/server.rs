@@ -37,7 +37,7 @@ impl<C: Crypt> Server<C> {
             let socket = socket.clone();
             async move {
                 loop {
-                    tokio::time::sleep(Duration::from_secs(HEARTBEAT_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(HEARTBEAT_MS)).await;
                     let mut dead = Vec::new();
                     for conn in connections.iter() {
                         match heartbeat(&conn, &socket).await {
@@ -72,15 +72,14 @@ impl<C: Crypt> Server<C> {
         }
         match buf[len - 1] {
             EventType::Hello => {
-                PackageDecoder::hello(&buf[..len]).map_err(|_| CsError::InvalidFormat)?;
+                PackageDecoder::hello(&buf[..len])?;
                 let data = PackageEncoder::ack_hello::<C>(&self.server_salt);
-                self.socket.send(&data).await?;
+                self.socket.send_to(&data, addr).await?;
                 Ok(false)
             }
             EventType::Connect => {
                 buf.truncate(len);
-                let (old, uid) = PackageDecoder::connect(&self.server_crypt, buf)
-                    .map_err(|_| CsError::InvalidFormat)?;
+                let (old, uid) = PackageDecoder::connect(&self.server_crypt, buf)?;
                 let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
                 if old.max(now) - old.min(now) > 60 {
                     return Err(CsError::InvalidTimestamp(old));
@@ -95,12 +94,13 @@ impl<C: Crypt> Server<C> {
                         Ok(inner.session_crypt.clone())
                     })
                 {
-                    let data = PackageEncoder::ack_connect(&*session_crypt, &uid)
-                        .map_err(|_| CsError::Encrypt)?;
-                    self.socket.send(&data).await?;
+                    let data = PackageEncoder::ack_connect(&*session_crypt, &uid)?;
+                    self.socket.send_to(&data, addr).await?;
                     return Ok(false);
                 }
                 let session_crypt = C::new(buf).map_err(|_| CsError::CreateCrypt)?;
+                let data = PackageEncoder::ack_connect(&session_crypt, &uid)?;
+                self.socket.send_to(&data, addr).await?;
                 let conn = Arc::new(Mutex::new(Some(Connection {
                     addr,
                     count: 1,
@@ -109,7 +109,6 @@ impl<C: Crypt> Server<C> {
                     life: MAX_LIFE,
                     max_count: 0,
                     replay_bitmap: 0,
-                    heartbeat_handle: None,
                 })));
                 self.connections.insert(uid, conn);
                 Ok(false)
@@ -117,7 +116,7 @@ impl<C: Crypt> Server<C> {
             event_type
             @ (EventType::Encrypted | EventType::Heartbeat | EventType::AckHeartbeat) => {
                 buf.truncate(len);
-                let uid = PackageDecoder::peek_uid(buf, 1).map_err(|_| CsError::InvalidFormat)?;
+                let uid = PackageDecoder::peek_uid(buf, 1)?;
                 let conn = self
                     .connections
                     .get(&uid)
@@ -130,8 +129,7 @@ impl<C: Crypt> Server<C> {
                     .ok_or(CsError::ConnectionBroken)?
                     .session_crypt
                     .clone();
-                let (count, uid) = PackageDecoder::encrypted(&*session_crypt, buf)
-                    .map_err(|_| CsError::Decrypt)?;
+                let (count, uid) = PackageDecoder::encrypted(&*session_crypt, buf)?;
                 conn.lock()
                     .map_err(|_| CsError::ConnectionBroken)?
                     .as_mut()
@@ -142,8 +140,7 @@ impl<C: Crypt> Server<C> {
                     EventType::Heartbeat => {
                         tracing::info!("Received heartbeat Request");
                         let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&conn)?;
-                        let data = PackageEncoder::heartbeat(&*session_crypt, count, &uid)
-                            .map_err(|_| CsError::Decrypt)?;
+                        let data = PackageEncoder::ack_heartbeat(&*session_crypt, count, &uid)?;
                         self.socket.send_to(&data, addr).await?;
                         Ok(false)
                     }

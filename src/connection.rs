@@ -3,7 +3,6 @@ use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
-use tokio::task::JoinHandle;
 
 pub type ConnectionMut<C> = Arc<Mutex<Option<Connection<C>>>>;
 
@@ -15,15 +14,6 @@ pub struct Connection<C: Crypt> {
     pub life: u32,
     pub max_count: u64,
     pub replay_bitmap: u128,
-    pub heartbeat_handle: Option<JoinHandle<()>>,
-}
-
-impl<C: Crypt> Drop for Connection<C> {
-    fn drop(&mut self) {
-        if let Some(handle) = self.heartbeat_handle.take() {
-            handle.abort();
-        }
-    }
 }
 
 impl<C: Crypt> Connection<C> {
