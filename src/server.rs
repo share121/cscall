@@ -168,6 +168,22 @@ impl<C: Crypto> Server<C> {
             socket: self.socket.clone(),
         })
     }
+
+    pub async fn send_all(&self, data: &[u8]) -> Result<(), CsError> {
+        let uids: Vec<[u8; UID_LEN]> = self.connections.iter().map(|c| *c.key()).collect();
+        for uid in uids {
+            let conn = self
+                .connections
+                .get(&uid)
+                .ok_or(CsError::ConnectionBroken)?
+                .clone();
+            let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&conn)?;
+            let mut buf = data.to_vec();
+            PackageEncoder::encrypted(&mut buf, &*session_crypt, count, &uid)?;
+            self.socket.send_to(&buf, addr).await?;
+        }
+        Ok(())
+    }
 }
 
 pub struct Channel<C: Crypto> {

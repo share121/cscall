@@ -14,7 +14,7 @@ use std::{
 use tokio::{net::UdpSocket, task::JoinHandle};
 
 pub struct Client<C: Crypto> {
-    pub socket: Arc<UdpSocket>,
+    socket: Arc<UdpSocket>,
     pwd: std::vec::Vec<u8>,
     addr: SocketAddr,
     conn: ConnectionMut<C>,
