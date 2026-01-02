@@ -1,9 +1,9 @@
 pub trait ByteArray:
-    AsRef<[u8]> + AsMut<[u8]> + Default + Send + Sync + 'static + Clone + std::fmt::Debug
+    AsRef<[u8]> + AsMut<[u8]> + Default + Send + Sync + Clone + std::fmt::Debug
 {
 }
 impl<T> ByteArray for T where
-    T: AsRef<[u8]> + AsMut<[u8]> + Default + Send + Sync + 'static + Clone + std::fmt::Debug
+    T: AsRef<[u8]> + AsMut<[u8]> + Default + Send + Sync + Clone + std::fmt::Debug
 {
 }
 
@@ -16,7 +16,7 @@ pub trait Crypt: Send + Sync + 'static {
     type Key: ByteArray;
 
     type Error: Send + 'static;
-    fn new(key: &Self::Key) -> Result<Self, Self::Error>
+    fn new(key: &[u8]) -> Result<Self, Self::Error>
     where
         Self: Sized;
     fn mix_salt(salt_a: &Self::Salt, salt_b: &Self::Salt) -> Result<Self::Salt, Self::Error>;

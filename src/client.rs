@@ -61,8 +61,8 @@ impl<C: Crypt> Client<C> {
             tokio::try_join!(session_key, server_key).map_err(|_| CsError::DeriveKey)?;
         let session_key = session_key.map_err(|_| CsError::DeriveKey)?;
         let server_key = server_key.map_err(|_| CsError::DeriveKey)?;
-        let session_crypt = C::new(&session_key).map_err(|_| CsError::CreateCrypt)?;
-        let server_crypt = C::new(&server_key).map_err(|_| CsError::CreateCrypt)?;
+        let session_crypt = C::new(session_key.as_ref()).map_err(|_| CsError::CreateCrypt)?;
+        let server_crypt = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypt)?;
         // 发送 Connect 请求，并使用 server_crypt 加密，服务器返回的数据用 session_crypt 验证 AckConnect
         let mut uid = [0u8; UID_LEN];
         OsRng.try_fill_bytes(&mut uid)?;
@@ -155,6 +155,7 @@ impl<C: Crypt> Client<C> {
         match buf[len - 1] {
             event_type
             @ (EventType::Encrypted | EventType::Heartbeat | EventType::AckHeartbeat) => {
+                buf.truncate(len);
                 let session_crypt = self
                     .conn
                     .lock()

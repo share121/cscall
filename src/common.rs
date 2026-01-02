@@ -1,4 +1,9 @@
-use crate::{HEARTBEAT_MS, connection::Connection, crypt::Crypt, package::PackageEncoder};
+use crate::{
+    HEARTBEAT_MS,
+    connection::Connection,
+    crypt::Crypt,
+    package::{DecodeError, PackageEncoder},
+};
 use std::{sync::Mutex, time::Duration};
 use tokio::net::UdpSocket;
 
@@ -14,6 +19,8 @@ pub enum CsError {
     CreateCrypt,
     #[error("Failed to generate UID")]
     GenerateUID(#[from] rand::rand_core::OsError),
+    #[error("Failed to decode data {0:?}")]
+    Decode(#[from] DecodeError),
     #[error("Failed to encrypt data")]
     Encrypt,
     #[error("Failed to decrypt data")]
@@ -26,6 +33,10 @@ pub enum CsError {
     InvalidUid,
     #[error("Invalid counter")]
     InvalidCounter,
+    #[error("Invalid timestamp")]
+    InvalidTimestamp(u64),
+    #[error("System time error")]
+    SystemTime(#[from] std::time::SystemTimeError),
 }
 
 pub async fn heartbeat<C: Crypt>(conn: &Mutex<Option<Connection<C>>>, socket: &UdpSocket) {
