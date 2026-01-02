@@ -27,9 +27,16 @@ impl<C: Crypto> Drop for Server<C> {
 }
 
 impl<C: Crypto> Server<C> {
-    pub fn new(pwd: &[u8], socket: Arc<UdpSocket>) -> Result<Self, CsError> {
+    pub async fn new(pwd: &[u8], socket: Arc<UdpSocket>) -> Result<Self, CsError> {
         let server_salt = C::gen_salt().map_err(|_| CsError::GenerateSalt)?;
-        let server_key = C::derive_key(pwd, &server_salt).map_err(|_| CsError::DeriveKey)?;
+        let server_key = tokio::task::spawn_blocking({
+            let pwd = pwd.to_vec();
+            let server_salt = server_salt.clone();
+            move || C::derive_key(&pwd, &server_salt)
+        })
+        .await
+        .map_err(|_| CsError::DeriveKey)?
+        .map_err(|_| CsError::DeriveKey)?;
         let server_crypt = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
         let connections: Arc<DashMap<[u8; UID_LEN], ConnectionMut<C>>> = Arc::new(DashMap::new());
         let heartbeat_handle = tokio::spawn({
@@ -39,11 +46,14 @@ impl<C: Crypto> Server<C> {
                 loop {
                     tokio::time::sleep(Duration::from_millis(HEARTBEAT_MS)).await;
                     let mut dead = Vec::new();
-                    for conn in connections.iter() {
-                        match heartbeat(&conn, &socket).await {
-                            Ok(()) => {}
-                            Err(CsError::ConnectionBroken) => dead.push(*conn.key()),
-                            Err(e) => tracing::warn!("未知错误 {e:?}"),
+                    let uids: Vec<_> = connections.iter().map(|c| *c.key()).collect();
+                    for uid in uids {
+                        if let Some(conn) = connections.get(&uid) {
+                            match heartbeat(&conn, &socket).await {
+                                Ok(()) => {}
+                                Err(CsError::ConnectionBroken) => dead.push(uid),
+                                Err(e) => tracing::warn!("未知错误 {e:?}"),
+                            }
                         }
                     }
                     for uid in dead {
