@@ -1,3 +1,4 @@
+#[cfg(feature = "aes256gcm")]
 pub mod aes256gcm;
 
 pub trait ByteArray:
