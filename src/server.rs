@@ -52,7 +52,7 @@ impl<C: Crypto> Server<C> {
                             match heartbeat(&conn, &socket).await {
                                 Ok(()) => {}
                                 Err(CsError::ConnectionBroken) => dead.push(uid),
-                                Err(e) => tracing::warn!("未知错误 {e:?}"),
+                                Err(e) => tracing::warn!("Heartbeat error {e:?}"),
                             }
                         }
                     }

@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use crate::{connection::Connection, crypto::Crypto, package::PackageEncoder};
+use crate::{UID_LEN, connection::Connection, crypto::Crypto, package::PackageEncoder};
 use tokio::net::UdpSocket;
 
 #[derive(Debug, thiserror::Error)]
@@ -31,13 +31,13 @@ pub enum CsError {
 
     // 消息解码
     #[error("Invalid type")]
-    InvalidType,
+    InvalidType(Option<u8>),
     #[error("Invalid format")]
     InvalidFormat,
     #[error("Invalid uid")]
-    InvalidUid,
+    InvalidUid([u8; UID_LEN]),
     #[error("Invalid counter")]
-    InvalidCounter,
+    InvalidCounter(u64),
     #[error("Invalid timestamp")]
     InvalidTimestamp(u64),
 

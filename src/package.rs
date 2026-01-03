@@ -135,7 +135,7 @@ impl PackageDecoder {
             buf.last(),
             Some(&EventType::Encrypted | &EventType::Heartbeat | &EventType::AckHeartbeat)
         ) {
-            return Err(CsError::InvalidType);
+            return Err(CsError::InvalidType(buf.last().cloned()));
         }
         if buf.len() < COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1 {
             return Err(CsError::InvalidFormat);
@@ -165,7 +165,7 @@ impl PackageDecoder {
     /// 63个0 + Hello
     pub fn hello(buf: &[u8]) -> Result<(), CsError> {
         if buf.last() != Some(&EventType::Hello) {
-            return Err(CsError::InvalidType);
+            return Err(CsError::InvalidType(buf.last().cloned()));
         }
         if buf[..buf.len() - 1] == [0; 63] {
             Ok(())
@@ -178,7 +178,7 @@ impl PackageDecoder {
     /// Return ServerSalt
     pub fn ack_hello<C: Crypto>(buf: &[u8]) -> Result<C::Salt, CsError> {
         if buf.last() != Some(&EventType::AckHello) {
-            return Err(CsError::InvalidType);
+            return Err(CsError::InvalidType(buf.last().cloned()));
         }
         if buf.len() != C::SALT_LEN + 1 {
             return Err(CsError::InvalidFormat);
@@ -196,7 +196,7 @@ impl PackageDecoder {
         buf: &mut Vec<u8>,
     ) -> Result<(u64, [u8; UID_LEN]), CsError> {
         if buf.last() != Some(&EventType::Connect) {
-            return Err(CsError::InvalidType);
+            return Err(CsError::InvalidType(buf.last().cloned()));
         }
         if buf.len() != C::KEY_LEN + TIMESTAMP_LEN + UID_LEN + C::ADDITION_LEN + 1 {
             return Err(CsError::InvalidFormat);
@@ -226,7 +226,7 @@ impl PackageDecoder {
         buf: &mut Vec<u8>,
     ) -> Result<[u8; UID_LEN], CsError> {
         if buf.last() != Some(&EventType::AckConnect) {
-            return Err(CsError::InvalidType);
+            return Err(CsError::InvalidType(buf.last().cloned()));
         }
         if buf.len() != UID_LEN + C::ADDITION_LEN + 1 {
             return Err(CsError::InvalidFormat);

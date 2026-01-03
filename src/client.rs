@@ -132,7 +132,7 @@ impl<C: Crypto> Client<C> {
                     match heartbeat(&conn, &socket).await {
                         Ok(()) => {}
                         Err(CsError::ConnectionBroken) => break,
-                        Err(e) => tracing::warn!("未知错误 {e:?}"),
+                        Err(e) => tracing::warn!("Heartbeat error {e:?}"),
                     }
                 }
             }

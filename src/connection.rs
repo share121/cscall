@@ -43,7 +43,7 @@ impl<C: Crypto> Connection<C> {
     ) -> Result<(), CsError> {
         if uid != self.uid {
             tracing::warn!("Invalid uid");
-            return Err(CsError::InvalidUid);
+            return Err(CsError::InvalidUid(uid));
         }
         if count > self.max_count {
             self.life = MAX_LIFE;
@@ -61,12 +61,12 @@ impl<C: Crypto> Connection<C> {
             let delta = self.max_count - count;
             if delta >= REORDER_WINDOW {
                 tracing::warn!("Invalid counter");
-                return Err(CsError::InvalidCounter);
+                return Err(CsError::InvalidCounter(count));
             } else {
                 let mask = 1 << delta;
                 if (self.replay_bitmap & mask) != 0 {
                     tracing::warn!("Invalid counter");
-                    return Err(CsError::InvalidCounter);
+                    return Err(CsError::InvalidCounter(count));
                 } else {
                     self.replay_bitmap |= mask;
                 }
