@@ -71,7 +71,7 @@ impl<C: Crypto> Server<C> {
         })
     }
 
-    pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<Option<[u8; UID_LEN]>, CsError> {
+    pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<Option<([u8; UID_LEN], u64)>, CsError> {
         if buf.capacity() < 1500 {
             buf.reserve(1500 - buf.len());
         }
@@ -146,7 +146,7 @@ impl<C: Crypto> Server<C> {
                     .ok_or(CsError::ConnectionBroken)?
                     .check_and_update(count, uid, Some(addr))?;
                 match event_type {
-                    EventType::Encrypted => Ok(Some(uid)),
+                    EventType::Encrypted => Ok(Some((uid, count))),
                     EventType::Heartbeat => {
                         tracing::info!("Received heartbeat Request");
                         let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&conn)?;

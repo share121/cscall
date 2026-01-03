@@ -175,7 +175,7 @@ impl<C: Crypto> Client<C> {
         Ok(())
     }
 
-    pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<bool, CsError> {
+    pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<Option<([u8; UID_LEN], u64)>, CsError> {
         if buf.capacity() < 1500 {
             buf.reserve(1500 - buf.len());
         }
@@ -204,18 +204,18 @@ impl<C: Crypto> Client<C> {
                     .ok_or(CsError::ConnectionBroken)?
                     .check_and_update(count, uid, None)?;
                 match event_type {
-                    EventType::Encrypted => Ok(true),
+                    EventType::Encrypted => Ok(Some((uid, count))),
                     EventType::Heartbeat => {
                         tracing::info!("Received heartbeat Request");
                         let (session_crypt, count, uid, addr) =
                             Connection::try_pre_encrypt(&self.conn)?;
                         let data = PackageEncoder::ack_heartbeat(&*session_crypt, count, &uid)?;
                         self.socket.send_to(&data, addr).await?;
-                        Ok(false)
+                        Ok(None)
                     }
                     EventType::AckHeartbeat => {
                         tracing::info!("Received heartbeat ACK");
-                        Ok(false)
+                        Ok(None)
                     }
                     _ => Err(CsError::InvalidFormat),
                 }
