@@ -68,6 +68,7 @@ impl<C: Crypto> Connection<C> {
                     tracing::warn!("Invalid counter");
                     return Err(CsError::InvalidCounter(count));
                 } else {
+                    tracing::warn!("Reordered counter");
                     self.replay_bitmap |= mask;
                 }
             }
