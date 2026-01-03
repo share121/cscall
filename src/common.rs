@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use crate::{UID_LEN, connection::Connection, crypto::Crypto, package::PackageEncoder};
+use crate::{MAX_LIFE, UID_LEN, connection::Connection, crypto::Crypto, package::PackageEncoder};
 use tokio::net::UdpSocket;
 
 #[derive(Debug, thiserror::Error)]
@@ -59,6 +59,9 @@ pub async fn heartbeat<C: Crypto>(
             return Err(CsError::ConnectionBroken);
         }
         guard_ref.life -= 1;
+        if guard_ref.life == MAX_LIFE - 1 {
+            return Ok(());
+        }
         guard_ref.pre_encrypt()
     };
     let data = PackageEncoder::heartbeat(&*session_crypt, count, &uid)?;
