@@ -6,14 +6,14 @@ use aes_gcm::{
 use argon2::Argon2;
 use sha2::{Digest, Sha256};
 
-pub struct Aes256GcmCrypt {
+pub struct Aes256GcmCrypto {
     cipher: Aes256Gcm,
 }
 
 pub const TAG_LEN: usize = 16;
 pub const NONCE_LEN: usize = 12;
 
-impl Crypto for Aes256GcmCrypt {
+impl Crypto for Aes256GcmCrypto {
     const SALT_LEN: usize = 32;
     const KEY_LEN: usize = 32;
     const ADDITION_LEN: usize = TAG_LEN + NONCE_LEN;

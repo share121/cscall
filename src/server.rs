@@ -1,22 +1,22 @@
 use crate::{
-    EventType, HEARTBEAT_MS, MAX_LIFE, UID_LEN,
+    EventType, HEARTBEAT_MS, UID_LEN,
     common::{CsError, heartbeat},
-    connection::{Connection, ConnectionMut},
+    connection::Connection,
     crypto::Crypto,
     package::{PackageDecoder, PackageEncoder},
 };
 use dashmap::DashMap;
 use std::{
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::net::UdpSocket;
 
 pub struct Server<C: Crypto> {
     socket: Arc<UdpSocket>,
-    server_crypt: C,
+    server_crypto: C,
     server_salt: C::Salt,
-    connections: Arc<DashMap<[u8; UID_LEN], ConnectionMut<C>>>,
+    connections: Arc<DashMap<[u8; UID_LEN], Connection<C>>>,
     heartbeat_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -37,8 +37,8 @@ impl<C: Crypto> Server<C> {
         .await
         .map_err(|_| CsError::DeriveKey)?
         .map_err(|_| CsError::DeriveKey)?;
-        let server_crypt = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
-        let connections: Arc<DashMap<[u8; UID_LEN], ConnectionMut<C>>> = Arc::new(DashMap::new());
+        let server_crypto = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
+        let connections: Arc<DashMap<[u8; UID_LEN], Connection<C>>> = Arc::new(DashMap::new());
         let heartbeat_handle = tokio::spawn({
             let connections = connections.clone();
             let socket = socket.clone();
@@ -64,7 +64,7 @@ impl<C: Crypto> Server<C> {
         });
         Ok(Self {
             socket,
-            server_crypt,
+            server_crypto,
             server_salt,
             connections,
             heartbeat_handle,
@@ -89,37 +89,25 @@ impl<C: Crypto> Server<C> {
             }
             EventType::Connect => {
                 buf.truncate(len);
-                let (old, uid) = PackageDecoder::connect(&self.server_crypt, buf)?;
+                let (old, uid) = PackageDecoder::connect(&self.server_crypto, buf)?;
                 let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
                 if old.abs_diff(now) > 60 {
                     return Err(CsError::InvalidTimestamp(old));
                 }
-                if let Ok(session_crypt) = self
+                if let Ok(session_crypto) = self
                     .connections
                     .get(&uid)
                     .ok_or(CsError::ConnectionBroken)
-                    .and_then(|c| {
-                        let guard = c.lock().map_err(|_| CsError::ConnectionBroken)?;
-                        let inner = guard.as_ref().ok_or(CsError::ConnectionBroken)?;
-                        Ok(inner.session_crypt.clone())
-                    })
+                    .and_then(|c| c.sessiton_crypto())
                 {
-                    let data = PackageEncoder::ack_connect(&*session_crypt, &uid)?;
+                    let data = PackageEncoder::ack_connect(&*session_crypto, &uid)?;
                     self.socket.send_to(&data, addr).await?;
                     return Ok(None);
                 }
-                let session_crypt = C::new(buf).map_err(|_| CsError::CreateCrypto)?;
-                let data = PackageEncoder::ack_connect(&session_crypt, &uid)?;
+                let session_crypto = C::new(buf).map_err(|_| CsError::CreateCrypto)?;
+                let data = PackageEncoder::ack_connect(&session_crypto, &uid)?;
                 self.socket.send_to(&data, addr).await?;
-                let conn = Arc::new(Mutex::new(Some(Connection {
-                    addr,
-                    count: 1,
-                    session_crypt: Arc::new(session_crypt),
-                    uid,
-                    life: MAX_LIFE,
-                    max_count: 0,
-                    replay_bitmap: 0,
-                })));
+                let conn = Connection::new(uid, addr, Arc::new(session_crypto));
                 self.connections.insert(uid, conn);
                 Ok(None)
             }
@@ -132,25 +120,15 @@ impl<C: Crypto> Server<C> {
                     .get(&uid)
                     .ok_or(CsError::ConnectionBroken)?
                     .clone();
-                let session_crypt = conn
-                    .lock()
-                    .map_err(|_| CsError::ConnectionBroken)?
-                    .as_ref()
-                    .ok_or(CsError::ConnectionBroken)?
-                    .session_crypt
-                    .clone();
-                let (count, uid) = PackageDecoder::encrypted(&*session_crypt, buf)?;
-                conn.lock()
-                    .map_err(|_| CsError::ConnectionBroken)?
-                    .as_mut()
-                    .ok_or(CsError::ConnectionBroken)?
-                    .check_and_update(count, uid, Some(addr))?;
+                let session_crypto = conn.sessiton_crypto()?;
+                let (count, uid) = PackageDecoder::encrypted(&*session_crypto, buf)?;
+                conn.check_and_update(count, uid, Some(addr))?;
                 match event_type {
                     EventType::Encrypted => Ok(Some((uid, count))),
                     EventType::Heartbeat => {
                         tracing::info!("Received heartbeat Request");
-                        let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&conn)?;
-                        let data = PackageEncoder::ack_heartbeat(&*session_crypt, count, &uid)?;
+                        let (session_crypto, count, uid, addr) = conn.pre_encrypt()?;
+                        let data = PackageEncoder::ack_heartbeat(&*session_crypto, count, &uid)?;
                         self.socket.send_to(&data, addr).await?;
                         Ok(None)
                     }
@@ -187,9 +165,9 @@ impl<C: Crypto> Server<C> {
                 .get(&uid)
                 .ok_or(CsError::ConnectionBroken)?
                 .clone();
-            let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&conn)?;
+            let (session_crypto, count, uid, addr) = conn.pre_encrypt()?;
             let mut buf = data.to_vec();
-            PackageEncoder::encrypted(&mut buf, &*session_crypt, count, &uid)?;
+            PackageEncoder::encrypted(&mut buf, &*session_crypto, count, &uid)?;
             self.socket.send_to(&buf, addr).await?;
         }
         Ok(())
@@ -197,14 +175,14 @@ impl<C: Crypto> Server<C> {
 }
 
 pub struct Channel<C: Crypto> {
-    conn: ConnectionMut<C>,
+    conn: Connection<C>,
     socket: Arc<UdpSocket>,
 }
 
 impl<C: Crypto> Channel<C> {
     pub async fn send(&self, buf: &mut Vec<u8>) -> Result<(), CsError> {
-        let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&self.conn)?;
-        PackageEncoder::encrypted(buf, &*session_crypt, count, &uid)?;
+        let (session_crypto, count, uid, addr) = self.conn.pre_encrypt()?;
+        PackageEncoder::encrypted(buf, &*session_crypto, count, &uid)?;
         self.socket.send_to(buf, addr).await?;
         Ok(())
     }

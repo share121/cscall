@@ -1,7 +1,7 @@
 use crate::{
-    EventType, HEARTBEAT_MS, MAX_LIFE, UID_LEN,
+    EventType, HEARTBEAT_MS, UID_LEN,
     common::{CsError, heartbeat},
-    connection::{Connection, ConnectionMut},
+    connection::Connection,
     crypto::Crypto,
     package::{PackageDecoder, PackageEncoder},
 };
@@ -15,9 +15,9 @@ use tokio::{net::UdpSocket, task::JoinHandle};
 
 pub struct Client<C: Crypto> {
     socket: Arc<UdpSocket>,
-    pwd: std::vec::Vec<u8>,
+    pwd: Vec<u8>,
     addr: SocketAddr,
-    conn: ConnectionMut<C>,
+    conn: Connection<C>,
     heartbeat_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
@@ -29,7 +29,7 @@ impl<C: Crypto> Drop for Client<C> {
 
 impl<C: Crypto> Client<C> {
     pub async fn connect(
-        conn: ConnectionMut<C>,
+        conn: Connection<C>,
         socket: Arc<UdpSocket>,
         pwd: &[u8],
         addr: SocketAddr,
@@ -59,7 +59,7 @@ impl<C: Crypto> Client<C> {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        // 混合 client_salt 和 server_salt 并生成 session_crypt 和 server_crypt
+        // 混合 client_salt 和 server_salt 并生成 session_crypto 和 server_crypto
         let client_salt = C::gen_salt().map_err(|_| CsError::GenerateSalt)?;
         let mix_salt = C::mix_salt(&server_salt, &client_salt).map_err(|_| CsError::MixSalt)?;
         let session_key = tokio::task::spawn_blocking({
@@ -74,13 +74,13 @@ impl<C: Crypto> Client<C> {
             tokio::try_join!(session_key, server_key).map_err(|_| CsError::DeriveKey)?;
         let session_key = session_key.map_err(|_| CsError::DeriveKey)?;
         let server_key = server_key.map_err(|_| CsError::DeriveKey)?;
-        let session_crypt = C::new(session_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
-        let server_crypt = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
-        // 发送 Connect 请求，并使用 server_crypt 加密，服务器返回的数据用 session_crypt 验证 AckConnect
+        let session_crypto = C::new(session_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
+        let server_crypto = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
+        // 发送 Connect 请求，并使用 server_crypto 加密，服务器返回的数据用 session_crypto 验证 AckConnect
         let mut uid = [0u8; UID_LEN];
         OsRng.try_fill_bytes(&mut uid)?;
         loop {
-            let data = PackageEncoder::connect(&server_crypt, &session_key, &uid)?;
+            let data = PackageEncoder::connect(&server_crypto, &session_key, &uid)?;
             match socket.send(&data).await {
                 Err(e) => tracing::warn!("Failed to send Connect: {e:?}"),
                 Ok(_) => {
@@ -92,7 +92,7 @@ impl<C: Crypto> Client<C> {
                         Err(e) => tracing::warn!("Failed to receive AckConnect: {e:?}"),
                         Ok(len) => {
                             buf.truncate(len);
-                            match PackageDecoder::ack_connect(&session_crypt, &mut buf) {
+                            match PackageDecoder::ack_connect(&session_crypto, &mut buf) {
                                 Ok(uid) if buf == uid => break,
                                 Ok(uid) => {
                                     tracing::warn!(
@@ -111,18 +111,7 @@ impl<C: Crypto> Client<C> {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let new_conn = Connection {
-            addr,
-            session_crypt: Arc::new(session_crypt),
-            uid,
-            count: 1,
-            life: MAX_LIFE,
-            max_count: 0,
-            replay_bitmap: 0,
-        };
-        conn.lock()
-            .map_err(|_| CsError::ConnectionBroken)?
-            .replace(new_conn);
+        conn.replace(uid, addr, Arc::new(session_crypto))?;
         let heartbeat_handle = tokio::spawn({
             let conn = conn.clone();
             let socket = socket.clone();
@@ -143,7 +132,7 @@ impl<C: Crypto> Client<C> {
     pub async fn new(pwd: std::vec::Vec<u8>, addr: SocketAddr) -> Result<Self, CsError> {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
         socket.connect(addr).await?;
-        let conn = Arc::new(Mutex::new(None));
+        let conn = Connection::default();
         let handle = Self::connect(conn.clone(), socket.clone(), &pwd, addr).await?;
         Ok(Self {
             socket,
@@ -169,8 +158,8 @@ impl<C: Crypto> Client<C> {
     }
 
     pub async fn send(&self, buf: &mut Vec<u8>) -> Result<(), CsError> {
-        let (session_crypt, count, uid, addr) = Connection::try_pre_encrypt(&self.conn)?;
-        PackageEncoder::encrypted(buf, &*session_crypt, count, &uid)?;
+        let (session_crypto, count, uid, addr) = self.conn.pre_encrypt()?;
+        PackageEncoder::encrypted(buf, &*session_crypto, count, &uid)?;
         self.socket.send_to(buf, addr).await?;
         Ok(())
     }
@@ -188,28 +177,15 @@ impl<C: Crypto> Client<C> {
             event_type
             @ (EventType::Encrypted | EventType::Heartbeat | EventType::AckHeartbeat) => {
                 buf.truncate(len);
-                let session_crypt = self
-                    .conn
-                    .lock()
-                    .map_err(|_| CsError::ConnectionBroken)?
-                    .as_ref()
-                    .ok_or(CsError::ConnectionBroken)?
-                    .session_crypt
-                    .clone();
-                let (count, uid) = PackageDecoder::encrypted(&*session_crypt, buf)?;
-                self.conn
-                    .lock()
-                    .map_err(|_| CsError::ConnectionBroken)?
-                    .as_mut()
-                    .ok_or(CsError::ConnectionBroken)?
-                    .check_and_update(count, uid, None)?;
+                let session_crypto = self.conn.sessiton_crypto()?;
+                let (count, uid) = PackageDecoder::encrypted(&*session_crypto, buf)?;
+                self.conn.check_and_update(count, uid, None)?;
                 match event_type {
                     EventType::Encrypted => Ok(Some((uid, count))),
                     EventType::Heartbeat => {
                         tracing::info!("Received heartbeat Request");
-                        let (session_crypt, count, uid, addr) =
-                            Connection::try_pre_encrypt(&self.conn)?;
-                        let data = PackageEncoder::ack_heartbeat(&*session_crypt, count, &uid)?;
+                        let (session_crypto, count, uid, addr) = self.conn.pre_encrypt()?;
+                        let data = PackageEncoder::ack_heartbeat(&*session_crypto, count, &uid)?;
                         self.socket.send_to(&data, addr).await?;
                         Ok(None)
                     }

@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use crate::{MAX_LIFE, UID_LEN, connection::Connection, crypto::Crypto, package::PackageEncoder};
 use tokio::net::UdpSocket;
 
@@ -46,12 +44,9 @@ pub enum CsError {
     SystemTime(#[from] std::time::SystemTimeError),
 }
 
-pub async fn heartbeat<C: Crypto>(
-    conn: &Mutex<Option<Connection<C>>>,
-    socket: &UdpSocket,
-) -> Result<(), CsError> {
-    let (session_crypt, count, uid, addr) = {
-        let mut guard = conn.lock().map_err(|_| CsError::ConnectionBroken)?;
+pub async fn heartbeat<C: Crypto>(conn: &Connection<C>, socket: &UdpSocket) -> Result<(), CsError> {
+    let (session_crypto, count, uid, addr) = {
+        let mut guard = conn.inner.lock().map_err(|_| CsError::ConnectionBroken)?;
         let guard_ref = guard.as_mut().ok_or(CsError::ConnectionBroken)?;
         if guard_ref.life == 0 {
             *guard = None;
@@ -64,7 +59,7 @@ pub async fn heartbeat<C: Crypto>(
         }
         guard_ref.pre_encrypt()
     };
-    let data = PackageEncoder::heartbeat(&*session_crypt, count, &uid)?;
+    let data = PackageEncoder::heartbeat(&*session_crypto, count, &uid)?;
     socket.send_to(&data.to_vec(), addr).await?;
     Ok(())
 }

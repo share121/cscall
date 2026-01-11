@@ -4,35 +4,22 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub type ConnectionMut<C> = Arc<Mutex<Option<Connection<C>>>>;
-
-pub struct Connection<C: Crypto> {
+pub struct ConnectionInner<C: Crypto> {
     pub addr: SocketAddr,
     pub count: u64,
-    pub session_crypt: Arc<C>,
+    pub session_crypto: Arc<C>,
     pub uid: [u8; UID_LEN],
     pub life: u32,
     pub max_count: u64,
     pub replay_bitmap: u128,
 }
 
-impl<C: Crypto> Connection<C> {
-    /// Return: (session_crypt, count, uid)
+impl<C: Crypto> ConnectionInner<C> {
+    /// Return: (session_crypto, count, uid)
     pub fn pre_encrypt(&mut self) -> (Arc<C>, u64, [u8; UID_LEN], SocketAddr) {
         let count = self.count;
         self.count += 1;
-        (self.session_crypt.clone(), count, self.uid, self.addr)
-    }
-
-    /// Return: (session_crypt, count, uid)
-    pub fn try_pre_encrypt(
-        conn: &Mutex<Option<Self>>,
-    ) -> Result<(Arc<C>, u64, [u8; UID_LEN], SocketAddr), CsError> {
-        conn.lock()
-            .map_err(|_| CsError::ConnectionBroken)?
-            .as_mut()
-            .ok_or(CsError::ConnectionBroken)
-            .map(|c| c.pre_encrypt())
+        (self.session_crypto.clone(), count, self.uid, self.addr)
     }
 
     pub fn check_and_update(
@@ -74,5 +61,95 @@ impl<C: Crypto> Connection<C> {
             }
         }
         Ok(())
+    }
+}
+
+pub struct Connection<C: Crypto> {
+    pub inner: Arc<Mutex<Option<ConnectionInner<C>>>>,
+}
+
+impl<C: Crypto> Clone for Connection<C> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<C: Crypto> Connection<C> {
+    pub fn new(uid: [u8; UID_LEN], addr: SocketAddr, session_crypto: Arc<C>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Some(ConnectionInner {
+                uid,
+                addr,
+                session_crypto,
+                count: 1,
+                life: MAX_LIFE,
+                max_count: 0,
+                replay_bitmap: 0,
+            }))),
+        }
+    }
+
+    pub fn replace(
+        &self,
+        uid: [u8; UID_LEN],
+        addr: SocketAddr,
+        session_crypto: Arc<C>,
+    ) -> Result<(), CsError> {
+        self.inner
+            .lock()
+            .map_err(|_| CsError::ConnectionBroken)?
+            .replace(ConnectionInner {
+                uid,
+                addr,
+                session_crypto,
+                count: 1,
+                life: MAX_LIFE,
+                max_count: 0,
+                replay_bitmap: 0,
+            });
+        Ok(())
+    }
+
+    /// Return: (session_crypto, count, uid)
+    pub fn pre_encrypt(&self) -> Result<(Arc<C>, u64, [u8; UID_LEN], SocketAddr), CsError> {
+        self.inner
+            .lock()
+            .map_err(|_| CsError::ConnectionBroken)?
+            .as_mut()
+            .ok_or(CsError::ConnectionBroken)
+            .map(|c| c.pre_encrypt())
+    }
+
+    pub fn check_and_update(
+        &self,
+        count: u64,
+        uid: [u8; UID_LEN],
+        addr: Option<SocketAddr>,
+    ) -> Result<(), CsError> {
+        self.inner
+            .lock()
+            .map_err(|_| CsError::ConnectionBroken)?
+            .as_mut()
+            .ok_or(CsError::ConnectionBroken)
+            .and_then(|c| c.check_and_update(count, uid, addr))
+    }
+
+    pub fn sessiton_crypto(&self) -> Result<Arc<C>, CsError> {
+        self.inner
+            .lock()
+            .map_err(|_| CsError::ConnectionBroken)?
+            .as_ref()
+            .ok_or(CsError::ConnectionBroken)
+            .map(|c| c.session_crypto.clone())
+    }
+}
+
+impl<C: Crypto> Default for Connection<C> {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+        }
     }
 }
