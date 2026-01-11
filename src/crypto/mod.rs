@@ -1,5 +1,6 @@
 #[cfg(feature = "aes256gcm")]
 pub mod aes256gcm;
+pub mod nocrypto;
 
 pub trait ByteArray:
     AsRef<[u8]> + AsMut<[u8]> + Default + Send + Sync + Clone + std::fmt::Debug
