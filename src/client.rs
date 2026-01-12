@@ -129,8 +129,11 @@ impl<C: Crypto> Client<C> {
         Ok(heartbeat_handle)
     }
 
-    pub async fn new(pwd: Vec<u8>, addr: SocketAddr) -> Result<Self, CsError> {
-        let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+    pub async fn new(
+        pwd: Vec<u8>,
+        addr: SocketAddr,
+        socket: Arc<UdpSocket>,
+    ) -> Result<Self, CsError> {
         socket.connect(addr).await?;
         let conn = Connection::default();
         let handle = Self::connect(&conn, &socket, &pwd, addr).await?;
