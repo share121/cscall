@@ -6,9 +6,6 @@ version = 2
 allow = ["Apache-2.0", "MIT", "Unicode-3.0", "BSD-3-Clause"]
 confidence-threshold = 1.0
 
-[licenses.private]
-ignore = true
-
 [bans]
 # We don't maintain a fixed Cargo.lock so enforcing
 # `multiple-versions = "deny"` is impractical.

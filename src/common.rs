@@ -46,7 +46,7 @@ pub enum CsError {
 
 pub async fn heartbeat<C: Crypto>(conn: &Connection<C>, socket: &UdpSocket) -> Result<(), CsError> {
     let (session_crypto, count, uid, addr) = {
-        let mut guard = conn.inner.lock().map_err(|_| CsError::ConnectionBroken)?;
+        let mut guard = conn.inner()?;
         let guard_ref = guard.as_mut().ok_or(CsError::ConnectionBroken)?;
         if guard_ref.life == 0 {
             *guard = None;
@@ -60,6 +60,6 @@ pub async fn heartbeat<C: Crypto>(conn: &Connection<C>, socket: &UdpSocket) -> R
         guard_ref.pre_encrypt()
     };
     let data = PackageEncoder::heartbeat(&*session_crypto, count, &uid)?;
-    socket.send_to(&data.to_vec(), addr).await?;
+    socket.send_to(&data, addr).await?;
     Ok(())
 }

@@ -1,7 +1,7 @@
 use crate::{MAX_LIFE, REORDER_WINDOW, UID_LEN, common::CsError, crypto::Crypto};
 use std::{
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 pub struct ConnectionInner<C: Crypto> {
@@ -65,7 +65,7 @@ impl<C: Crypto> ConnectionInner<C> {
 }
 
 pub struct Connection<C: Crypto> {
-    pub inner: Arc<Mutex<Option<ConnectionInner<C>>>>,
+    inner: Arc<Mutex<Option<ConnectionInner<C>>>>,
 }
 
 impl<C: Crypto> Clone for Connection<C> {
@@ -91,32 +91,31 @@ impl<C: Crypto> Connection<C> {
         }
     }
 
+    pub fn inner(&self) -> Result<MutexGuard<'_, Option<ConnectionInner<C>>>, CsError> {
+        self.inner.lock().map_err(|_| CsError::ConnectionBroken)
+    }
+
     pub fn replace(
         &self,
         uid: [u8; UID_LEN],
         addr: SocketAddr,
         session_crypto: Arc<C>,
     ) -> Result<(), CsError> {
-        self.inner
-            .lock()
-            .map_err(|_| CsError::ConnectionBroken)?
-            .replace(ConnectionInner {
-                uid,
-                addr,
-                session_crypto,
-                count: 1,
-                life: MAX_LIFE,
-                max_count: 0,
-                replay_bitmap: 0,
-            });
+        self.inner()?.replace(ConnectionInner {
+            uid,
+            addr,
+            session_crypto,
+            count: 1,
+            life: MAX_LIFE,
+            max_count: 0,
+            replay_bitmap: 0,
+        });
         Ok(())
     }
 
     /// Return: (session_crypto, count, uid)
     pub fn pre_encrypt(&self) -> Result<(Arc<C>, u64, [u8; UID_LEN], SocketAddr), CsError> {
-        self.inner
-            .lock()
-            .map_err(|_| CsError::ConnectionBroken)?
+        self.inner()?
             .as_mut()
             .ok_or(CsError::ConnectionBroken)
             .map(|c| c.pre_encrypt())
@@ -128,18 +127,14 @@ impl<C: Crypto> Connection<C> {
         uid: [u8; UID_LEN],
         addr: Option<SocketAddr>,
     ) -> Result<(), CsError> {
-        self.inner
-            .lock()
-            .map_err(|_| CsError::ConnectionBroken)?
+        self.inner()?
             .as_mut()
             .ok_or(CsError::ConnectionBroken)
             .and_then(|c| c.check_and_update(count, uid, addr))
     }
 
     pub fn sessiton_crypto(&self) -> Result<Arc<C>, CsError> {
-        self.inner
-            .lock()
-            .map_err(|_| CsError::ConnectionBroken)?
+        self.inner()?
             .as_ref()
             .ok_or(CsError::ConnectionBroken)
             .map(|c| c.session_crypto.clone())

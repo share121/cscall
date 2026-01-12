@@ -29,8 +29,8 @@ impl<C: Crypto> Drop for Client<C> {
 
 impl<C: Crypto> Client<C> {
     pub async fn connect(
-        conn: Connection<C>,
-        socket: Arc<UdpSocket>,
+        conn: &Connection<C>,
+        socket: &Arc<UdpSocket>,
         pwd: &[u8],
         addr: SocketAddr,
     ) -> Result<JoinHandle<()>, CsError> {
@@ -129,11 +129,11 @@ impl<C: Crypto> Client<C> {
         Ok(heartbeat_handle)
     }
 
-    pub async fn new(pwd: std::vec::Vec<u8>, addr: SocketAddr) -> Result<Self, CsError> {
+    pub async fn new(pwd: Vec<u8>, addr: SocketAddr) -> Result<Self, CsError> {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
         socket.connect(addr).await?;
         let conn = Connection::default();
-        let handle = Self::connect(conn.clone(), socket.clone(), &pwd, addr).await?;
+        let handle = Self::connect(&conn, &socket, &pwd, addr).await?;
         Ok(Self {
             socket,
             pwd,
@@ -151,16 +151,15 @@ impl<C: Crypto> Client<C> {
 
     pub async fn reconnect(&self) -> Result<(), CsError> {
         self.close();
-        let handle =
-            Self::connect(self.conn.clone(), self.socket.clone(), &self.pwd, self.addr).await?;
+        let handle = Self::connect(&self.conn, &self.socket, &self.pwd, self.addr).await?;
         self.heartbeat_handle.lock().unwrap().replace(handle);
         Ok(())
     }
 
     pub async fn send(&self, buf: &mut Vec<u8>) -> Result<(), CsError> {
-        let (session_crypto, count, uid, addr) = self.conn.pre_encrypt()?;
+        let (session_crypto, count, uid, _) = self.conn.pre_encrypt()?;
         PackageEncoder::encrypted(buf, &*session_crypto, count, &uid)?;
-        self.socket.send_to(buf, addr).await?;
+        self.socket.send(buf).await?;
         Ok(())
     }
 
@@ -183,14 +182,14 @@ impl<C: Crypto> Client<C> {
                 match event_type {
                     EventType::Encrypted => Ok(Some((uid, count))),
                     EventType::Heartbeat => {
-                        tracing::info!("Received heartbeat Request");
-                        let (session_crypto, count, uid, addr) = self.conn.pre_encrypt()?;
+                        tracing::debug!("Received heartbeat Request");
+                        let (session_crypto, count, uid, _) = self.conn.pre_encrypt()?;
                         let data = PackageEncoder::ack_heartbeat(&*session_crypto, count, &uid)?;
-                        self.socket.send_to(&data, addr).await?;
+                        self.socket.send(&data).await?;
                         Ok(None)
                     }
                     EventType::AckHeartbeat => {
-                        tracing::info!("Received heartbeat ACK");
+                        tracing::debug!("Received heartbeat ACK");
                         Ok(None)
                     }
                     _ => Err(CsError::InvalidFormat),

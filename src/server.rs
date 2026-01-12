@@ -49,7 +49,9 @@ impl<C: Crypto> Server<C> {
                     let uids: Vec<_> = connections.iter().map(|c| *c.key()).collect();
                     for uid in uids {
                         if let Some(conn) = connections.get(&uid) {
-                            match heartbeat(&conn, &socket).await {
+                            let conn_clone = conn.clone();
+                            drop(conn);
+                            match heartbeat(&conn_clone, &socket).await {
                                 Ok(()) => {}
                                 Err(CsError::ConnectionBroken) => dead.push(uid),
                                 Err(e) => tracing::warn!("Heartbeat error {e:?}"),
@@ -126,14 +128,14 @@ impl<C: Crypto> Server<C> {
                 match event_type {
                     EventType::Encrypted => Ok(Some((uid, count))),
                     EventType::Heartbeat => {
-                        tracing::info!("Received heartbeat Request");
+                        tracing::debug!("Received heartbeat Request");
                         let (session_crypto, count, uid, addr) = conn.pre_encrypt()?;
                         let data = PackageEncoder::ack_heartbeat(&*session_crypto, count, &uid)?;
                         self.socket.send_to(&data, addr).await?;
                         Ok(None)
                     }
                     EventType::AckHeartbeat => {
-                        tracing::info!("Received heartbeat ACK");
+                        tracing::debug!("Received heartbeat ACK");
                         Ok(None)
                     }
                     _ => Err(CsError::InvalidFormat),
@@ -158,13 +160,8 @@ impl<C: Crypto> Server<C> {
     }
 
     pub async fn send_all(&self, data: &[u8]) -> Result<(), CsError> {
-        let uids: Vec<[u8; UID_LEN]> = self.connections.iter().map(|c| *c.key()).collect();
-        for uid in uids {
-            let conn = self
-                .connections
-                .get(&uid)
-                .ok_or(CsError::ConnectionBroken)?
-                .clone();
+        let conns: Vec<Connection<C>> = self.connections.iter().map(|c| c.clone()).collect();
+        for conn in conns {
             let (session_crypto, count, uid, addr) = conn.pre_encrypt()?;
             let mut buf = data.to_vec();
             PackageEncoder::encrypted(&mut buf, &*session_crypto, count, &uid)?;
