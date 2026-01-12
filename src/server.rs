@@ -1,5 +1,5 @@
 use crate::{
-    EventType, HEARTBEAT_MS, UID_LEN,
+    COUNT_LEN, EventType, HEARTBEAT_MS, UID_LEN,
     common::{CsError, heartbeat},
     connection::Connection,
     crypto::Crypto,
@@ -161,9 +161,11 @@ impl<C: Crypto> Server<C> {
 
     pub async fn send_all(&self, data: &[u8]) -> Result<(), CsError> {
         let conns: Vec<Connection<C>> = self.connections.iter().map(|c| c.clone()).collect();
+        let mut buf = Vec::with_capacity(data.len() + COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
         for conn in conns {
             let (session_crypto, count, uid, addr) = conn.pre_encrypt()?;
-            let mut buf = data.to_vec();
+            buf.clear();
+            buf.extend_from_slice(data);
             PackageEncoder::encrypted(&mut buf, &*session_crypto, count, &uid)?;
             self.socket.send_to(&buf, addr).await?;
         }
