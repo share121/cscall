@@ -10,7 +10,7 @@ pub const COUNT_LEN: usize = size_of::<u64>();
 pub const TIMESTAMP_LEN: usize = size_of::<u64>();
 pub const REORDER_WINDOW: u64 = 128;
 
-pub const MAX_LIFE: u32 = 4;
+pub const MAX_LIFE: u32 = 6;
 pub const HEARTBEAT_MS: u64 = 5000;
 
 #[allow(non_snake_case, non_upper_case_globals)]

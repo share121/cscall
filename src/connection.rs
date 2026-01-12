@@ -38,6 +38,9 @@ impl<C: Crypto> ConnectionInner<C> {
                 self.addr = addr;
             }
             let delta = count - self.max_count;
+            if delta > 1 {
+                tracing::warn!("Skip {} packets", delta - 1);
+            }
             if delta >= REORDER_WINDOW {
                 self.replay_bitmap = 1;
             } else {
