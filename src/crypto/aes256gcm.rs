@@ -4,7 +4,6 @@ use aes_gcm::{
     aead::{AeadInPlace, OsRng, rand_core::RngCore},
 };
 use argon2::Argon2;
-use sha2::{Digest, Sha256};
 
 pub struct Aes256GcmCrypto {
     cipher: Aes256Gcm,
@@ -28,14 +27,6 @@ impl Crypto for Aes256GcmCrypto {
         Ok(Self {
             cipher: Aes256Gcm::new(key.into()),
         })
-    }
-
-    fn mix_salt(salt_a: &Self::Salt, salt_b: &Self::Salt) -> Result<Self::Salt, Self::Error> {
-        let mut hasher = Sha256::new();
-        hasher.update(salt_a);
-        hasher.update(salt_b);
-        let res = hasher.finalize();
-        Ok(res.into())
     }
 
     fn gen_salt() -> Result<Self::Salt, Self::Error> {

@@ -15,7 +15,7 @@ pub enum CsError {
     #[error("Failed to create crypto")]
     CreateCrypto,
     #[error("Failed to generate UID")]
-    GenerateUID(#[from] rand::rand_core::OsError),
+    GenerateUID(#[from] rand::Error),
     #[error("Failed to encrypt data")]
     Encrypt,
     #[error("Failed to decrypt data")]

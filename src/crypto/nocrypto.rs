@@ -16,10 +16,6 @@ impl Crypto for NoCrypto {
         Ok(Self)
     }
 
-    fn mix_salt(_: &Self::Salt, _: &Self::Salt) -> Result<Self::Salt, Self::Error> {
-        Ok([])
-    }
-
     fn gen_salt() -> Result<Self::Salt, Self::Error> {
         Ok([])
     }

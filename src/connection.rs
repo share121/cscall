@@ -3,6 +3,7 @@ use std::{
     net::SocketAddr,
     sync::{Arc, Mutex, MutexGuard},
 };
+use x25519_dalek::PublicKey;
 
 pub struct ConnectionInner<C: Crypto> {
     pub addr: SocketAddr,
@@ -12,6 +13,7 @@ pub struct ConnectionInner<C: Crypto> {
     pub life: u32,
     pub max_count: u64,
     pub replay_bitmap: u128,
+    pub server_public: PublicKey,
 }
 
 impl<C: Crypto> ConnectionInner<C> {
@@ -80,12 +82,18 @@ impl<C: Crypto> Clone for Connection<C> {
 }
 
 impl<C: Crypto> Connection<C> {
-    pub fn new(uid: [u8; UID_LEN], addr: SocketAddr, session_crypto: Arc<C>) -> Self {
+    pub fn new(
+        uid: [u8; UID_LEN],
+        addr: SocketAddr,
+        session_crypto: Arc<C>,
+        server_public: PublicKey,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Some(ConnectionInner {
                 uid,
                 addr,
                 session_crypto,
+                server_public,
                 count: 1,
                 life: MAX_LIFE,
                 max_count: 0,
@@ -103,11 +111,13 @@ impl<C: Crypto> Connection<C> {
         uid: [u8; UID_LEN],
         addr: SocketAddr,
         session_crypto: Arc<C>,
+        server_public: PublicKey,
     ) -> Result<(), CsError> {
         self.inner()?.replace(ConnectionInner {
             uid,
             addr,
             session_crypto,
+            server_public,
             count: 1,
             life: MAX_LIFE,
             max_count: 0,
@@ -141,6 +151,13 @@ impl<C: Crypto> Connection<C> {
             .as_ref()
             .ok_or(CsError::ConnectionBroken)
             .map(|c| c.session_crypto.clone())
+    }
+
+    pub fn ack_connect(&self) -> Result<(Arc<C>, PublicKey), CsError> {
+        self.inner()?
+            .as_ref()
+            .ok_or(CsError::ConnectionBroken)
+            .map(|c| (c.session_crypto.clone(), c.server_public))
     }
 }
 

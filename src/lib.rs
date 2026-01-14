@@ -9,6 +9,7 @@ pub const UID_LEN: usize = 16;
 pub const COUNT_LEN: usize = size_of::<u64>();
 pub const TIMESTAMP_LEN: usize = size_of::<u64>();
 pub const REORDER_WINDOW: u64 = 128;
+pub const PUB_KEY_LEN: usize = 32;
 
 pub const MAX_LIFE: u32 = 6;
 pub const HEARTBEAT_MS: u64 = 10000;
@@ -25,10 +26,10 @@ pub mod EventType {
     /// ServerSalt + AckHello
     pub const AckHello: u8 = 3;
 
-    /// ServerKey(SessionKey + TimeStamp + Uid) + Connect
+    /// ServerKey(ClientPub + TimeStamp + Uid) + Connect
     pub const Connect: u8 = 4;
 
-    /// SessionKey(Uid) + AckConnect
+    /// ServerKey(ServerPub + Uid) + AckConnect
     pub const AckConnect: u8 = 5;
 
     /// SessionKey(Count) + Uid + Heartbeat

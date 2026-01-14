@@ -2,7 +2,7 @@ use crate::{
     COUNT_LEN, EventType, HEARTBEAT_MS, UID_LEN,
     common::{CsError, heartbeat},
     connection::Connection,
-    crypto::Crypto,
+    crypto::{Crypto, kdf_shared_secret},
     package::{PackageDecoder, PackageEncoder},
 };
 use dashmap::DashMap;
@@ -11,6 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::net::UdpSocket;
+use x25519_dalek::{EphemeralSecret, PublicKey};
 
 pub struct Server<C: Crypto> {
     socket: Arc<UdpSocket>,
@@ -91,25 +92,36 @@ impl<C: Crypto> Server<C> {
             }
             EventType::Connect => {
                 buf.truncate(len);
-                let (old, uid) = PackageDecoder::connect(&self.server_crypto, buf)?;
+                let (client_public, old, uid) = PackageDecoder::connect(&self.server_crypto, buf)?;
                 let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
                 if old.abs_diff(now) > 45 {
                     return Err(CsError::InvalidTimestamp(old));
                 }
-                if let Ok(session_crypto) = self
+                if let Ok((session_crypto, server_public)) = self
                     .connections
                     .get(&uid)
                     .ok_or(CsError::ConnectionBroken)
-                    .and_then(|c| c.sessiton_crypto())
+                    .and_then(|c| c.ack_connect())
                 {
-                    let data = PackageEncoder::ack_connect(&*session_crypto, &uid)?;
+                    let data = PackageEncoder::ack_connect(
+                        &*session_crypto,
+                        server_public.as_bytes(),
+                        &uid,
+                    )?;
                     self.socket.send_to(&data, addr).await?;
                     return Ok(None);
                 }
-                let session_crypto = C::new(buf).map_err(|_| CsError::CreateCrypto)?;
-                let data = PackageEncoder::ack_connect(&session_crypto, &uid)?;
+                let server_secret = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+                let server_public = PublicKey::from(&server_secret);
+                let shared_secret = server_secret.diffie_hellman(&client_public);
+                // 计算 Session Key
+                let session_key_bytes = kdf_shared_secret(shared_secret.as_bytes());
+                let session_crypto =
+                    C::new(&session_key_bytes).map_err(|_| CsError::CreateCrypto)?;
+                let data =
+                    PackageEncoder::ack_connect(&session_crypto, server_public.as_bytes(), &uid)?;
                 self.socket.send_to(&data, addr).await?;
-                let conn = Connection::new(uid, addr, Arc::new(session_crypto));
+                let conn = Connection::new(uid, addr, Arc::new(session_crypto), server_public);
                 self.connections.insert(uid, conn);
                 Ok(None)
             }
