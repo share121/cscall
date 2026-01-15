@@ -1,8 +1,8 @@
 pub mod client;
+pub mod coder;
 pub mod common;
 pub mod connection;
 pub mod crypto;
-pub mod package;
 pub mod server;
 
 pub const UID_LEN: usize = 16;

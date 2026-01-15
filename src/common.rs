@@ -1,4 +1,4 @@
-use crate::{MAX_LIFE, UID_LEN, connection::Connection, crypto::Crypto, package::PackageEncoder};
+use crate::{MAX_LIFE, UID_LEN, coder::Encoder, connection::Connection, crypto::Crypto};
 use tokio::net::UdpSocket;
 
 #[derive(Debug, thiserror::Error)]
@@ -72,7 +72,7 @@ pub async fn heartbeat<C: Crypto>(conn: &Connection<C>, socket: &UdpSocket) -> R
             guard_ref.count += 1;
             count
         };
-        let data = PackageEncoder::heartbeat(&*session_crypto, count, &uid)?;
+        let data = Encoder::heartbeat(&*session_crypto, count, &uid)?;
         socket.send_to(&data, addr).await?;
     }
     Ok(())

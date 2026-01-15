@@ -1,9 +1,9 @@
 use crate::{
     EventType, HEARTBEAT_MS, UID_LEN,
+    coder::{Decoder, Encoder},
     common::{CsError, heartbeat},
     connection::Connection,
     crypto::{Crypto, kdf_shared_secret},
-    package::{PackageDecoder, PackageEncoder},
 };
 use rand::{RngCore, rngs::OsRng};
 use std::{
@@ -37,7 +37,7 @@ impl<C: Crypto> Client<C> {
         let mut buf = vec![0u8; 1500];
         // 发送 Hello 直到服务器回应 AckHello 并解析 server_salt
         let server_salt: C::Salt = loop {
-            match socket.send(&PackageEncoder::hello()).await {
+            match socket.send(&Encoder::hello()).await {
                 Err(e) => tracing::warn!("Failed to send Hello: {e:?}"),
                 Ok(_) => {
                     if buf.capacity() < 1500 {
@@ -46,7 +46,7 @@ impl<C: Crypto> Client<C> {
                     unsafe { buf.set_len(1500) };
                     match socket.recv(&mut buf).await {
                         Err(e) => tracing::warn!("Failed to receive AckHello: {e:?}"),
-                        Ok(len) => match PackageDecoder::ack_hello::<C>(&buf[..len]) {
+                        Ok(len) => match Decoder::ack_hello::<C>(&buf[..len]) {
                             Ok(s) => break s,
                             Err(e) => tracing::warn!(
                                 "Expected AckHello but received: {:?} Error: {:?}",
@@ -74,7 +74,7 @@ impl<C: Crypto> Client<C> {
         let mut uid = [0u8; UID_LEN];
         OsRng.try_fill_bytes(&mut uid)?;
         let server_public = loop {
-            let data = PackageEncoder::connect(&server_crypto, client_public.as_bytes(), &uid)?;
+            let data = Encoder::connect(&server_crypto, client_public.as_bytes(), &uid)?;
             match socket.send(&data).await {
                 Err(e) => tracing::warn!("Failed to send Connect: {e:?}"),
                 Ok(_) => {
@@ -86,7 +86,7 @@ impl<C: Crypto> Client<C> {
                         Err(e) => tracing::warn!("Failed to receive AckConnect: {e:?}"),
                         Ok(len) => {
                             buf.truncate(len);
-                            match PackageDecoder::ack_connect(&server_crypto, &mut buf) {
+                            match Decoder::ack_connect(&server_crypto, &mut buf) {
                                 Ok((server_public, recv_uid)) if recv_uid == uid => {
                                     break server_public;
                                 }
@@ -160,7 +160,7 @@ impl<C: Crypto> Client<C> {
 
     pub async fn send(&self, buf: &mut Vec<u8>) -> Result<(), CsError> {
         let (session_crypto, count, uid, _) = self.conn.pre_encrypt()?;
-        PackageEncoder::encrypted(buf, &*session_crypto, count, &uid)?;
+        Encoder::encrypted(buf, &*session_crypto, count, &uid)?;
         self.socket.send(buf).await?;
         Ok(())
     }
@@ -179,14 +179,14 @@ impl<C: Crypto> Client<C> {
             @ (EventType::Encrypted | EventType::Heartbeat | EventType::AckHeartbeat) => {
                 buf.truncate(len);
                 let session_crypto = self.conn.sessiton_crypto()?;
-                let (count, uid) = PackageDecoder::encrypted(&*session_crypto, buf)?;
+                let (count, uid) = Decoder::encrypted(&*session_crypto, buf)?;
                 self.conn.check_and_update(count, uid, None)?;
                 match event_type {
                     EventType::Encrypted => Ok(Some((uid, count))),
                     EventType::Heartbeat => {
                         tracing::debug!("Received heartbeat Request");
                         let (session_crypto, count, uid, _) = self.conn.pre_encrypt()?;
-                        let data = PackageEncoder::ack_heartbeat(&*session_crypto, count, &uid)?;
+                        let data = Encoder::ack_heartbeat(&*session_crypto, count, &uid)?;
                         self.socket.send(&data).await?;
                         Ok(None)
                     }

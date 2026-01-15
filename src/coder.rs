@@ -5,8 +5,8 @@ use crate::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub struct PackageEncoder;
-impl PackageEncoder {
+pub struct Encoder;
+impl Encoder {
     /// SessionKey(PlainText + Count) + Uid + Encrypted
     pub fn encrypted<C: Crypto>(
         buf: &mut Vec<u8>,
@@ -116,8 +116,8 @@ impl PackageEncoder {
     }
 }
 
-pub struct PackageDecoder;
-impl PackageDecoder {
+pub struct Decoder;
+impl Decoder {
     pub fn peek_uid(buf: &[u8], offset: usize) -> Result<[u8; UID_LEN], CsError> {
         if buf.len() < UID_LEN + offset {
             return Err(CsError::InvalidFormat);
