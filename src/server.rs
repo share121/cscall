@@ -7,7 +7,7 @@ use crate::{
 };
 use dashmap::DashMap;
 use std::{
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::net::UdpSocket;
@@ -16,9 +16,10 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 pub struct Server<C: Crypto> {
     socket: Arc<UdpSocket>,
     server_crypto: C,
-    server_salt: C::Salt,
+    server_salt: Arc<Mutex<C::Salt>>,
     connections: Arc<DashMap<[u8; UID_LEN], Connection<C>>>,
     heartbeat_handle: tokio::task::JoinHandle<()>,
+    handshakeing: Arc<Mutex<Vec<[u8; UID_LEN]>>>,
 }
 
 impl<C: Crypto> Drop for Server<C> {
@@ -38,14 +39,19 @@ impl<C: Crypto> Server<C> {
         .await
         .map_err(|_| CsError::DeriveKey)?
         .map_err(|_| CsError::DeriveKey)?;
+        let server_salt = Arc::new(Mutex::new(server_salt));
         let server_crypto = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
         let connections: Arc<DashMap<[u8; UID_LEN], Connection<C>>> = Arc::new(DashMap::new());
         let heartbeat_handle = tokio::spawn({
             let connections = connections.clone();
             let socket = socket.clone();
+            let server_salt = server_salt.clone();
             async move {
                 loop {
                     tokio::time::sleep(Duration::from_millis(HEARTBEAT_MS)).await;
+                    if connections.is_empty() {
+                        continue;
+                    }
                     let mut dead = Vec::new();
                     let uids: Vec<_> = connections.iter().map(|c| *c.key()).collect();
                     for uid in uids {
@@ -62,6 +68,16 @@ impl<C: Crypto> Server<C> {
                     for uid in dead {
                         connections.remove(&uid);
                     }
+                    if connections.is_empty() {
+                        let new = match C::gen_salt() {
+                            Ok(s) => s,
+                            Err(_) => {
+                                tracing::error!("Failed to generate new salt");
+                                continue;
+                            }
+                        };
+                        *server_salt.lock().unwrap() = new;
+                    }
                 }
             }
         });
@@ -71,6 +87,7 @@ impl<C: Crypto> Server<C> {
             server_salt,
             connections,
             heartbeat_handle,
+            handshakeing: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -86,7 +103,7 @@ impl<C: Crypto> Server<C> {
         match buf[len - 1] {
             EventType::Hello => {
                 PackageDecoder::hello(&buf[..len])?;
-                let data = PackageEncoder::ack_hello::<C>(&self.server_salt);
+                let data = PackageEncoder::ack_hello::<C>(&self.server_salt.lock().unwrap());
                 self.socket.send_to(&data, addr).await?;
                 Ok(None)
             }
@@ -97,14 +114,21 @@ impl<C: Crypto> Server<C> {
                 if old.abs_diff(now) > 45 {
                     return Err(CsError::InvalidTimestamp(old));
                 }
-                if let Ok((session_crypto, server_public)) = self
+                {
+                    let mut handshakeing = self.handshakeing.lock().unwrap();
+                    if handshakeing.contains(&uid) {
+                        return Ok(None);
+                    }
+                    handshakeing.push(uid);
+                }
+                if let Ok(server_public) = self
                     .connections
                     .get(&uid)
                     .ok_or(CsError::ConnectionBroken)
-                    .and_then(|c| c.ack_connect())
+                    .and_then(|c| c.server_public())
                 {
                     let data = PackageEncoder::ack_connect(
-                        &*session_crypto,
+                        &self.server_crypto,
                         server_public.as_bytes(),
                         &uid,
                     )?;
@@ -118,8 +142,11 @@ impl<C: Crypto> Server<C> {
                 let session_key_bytes = kdf_shared_secret(shared_secret.as_bytes());
                 let session_crypto =
                     C::new(&session_key_bytes).map_err(|_| CsError::CreateCrypto)?;
-                let data =
-                    PackageEncoder::ack_connect(&session_crypto, server_public.as_bytes(), &uid)?;
+                let data = PackageEncoder::ack_connect(
+                    &self.server_crypto,
+                    server_public.as_bytes(),
+                    &uid,
+                )?;
                 self.socket.send_to(&data, addr).await?;
                 let conn = Connection::new(uid, addr, Arc::new(session_crypto), server_public);
                 self.connections.insert(uid, conn);

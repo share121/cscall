@@ -87,7 +87,9 @@ impl<C: Crypto> Client<C> {
                         Ok(len) => {
                             buf.truncate(len);
                             match PackageDecoder::ack_connect(&server_crypto, &mut buf) {
-                                Ok((server_public, uid)) if buf == uid => break server_public,
+                                Ok((server_public, recv_uid)) if recv_uid == uid => {
+                                    break server_public;
+                                }
                                 Ok(uid) => {
                                     tracing::warn!(
                                         "Received AckConnect but uid is not same: {uid:?}"

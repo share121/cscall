@@ -153,11 +153,11 @@ impl<C: Crypto> Connection<C> {
             .map(|c| c.session_crypto.clone())
     }
 
-    pub fn ack_connect(&self) -> Result<(Arc<C>, PublicKey), CsError> {
+    pub fn server_public(&self) -> Result<PublicKey, CsError> {
         self.inner()?
             .as_ref()
             .ok_or(CsError::ConnectionBroken)
-            .map(|c| (c.session_crypto.clone(), c.server_public))
+            .map(|c| c.server_public)
     }
 }
 
