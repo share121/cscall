@@ -3,7 +3,7 @@ use crate::{
     coder::{Decoder, Encoder},
     common::{CsError, heartbeat},
     connection::Connection,
-    crypto::{Crypto, kdf_shared_secret},
+    crypto::{Crypto, hash},
 };
 use rand::{RngCore, rngs::OsRng};
 use std::{
@@ -67,12 +67,11 @@ impl<C: Crypto> Client<C> {
             move || C::derive_key(&pwd, &server_salt)
         })
         .await
-        .map_err(|_| CsError::DeriveKey)?
-        .map_err(|_| CsError::DeriveKey)?;
-        let server_crypto = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
+        .or(Err(CsError::Crypto))??;
+        let server_crypto = C::new(server_key.as_ref())?;
         // 发送 Connect 请求，并使用 server_crypto 加密，服务器返回的数据用 server_crypto 验证 AckConnect
         let mut uid = [0u8; UID_LEN];
-        OsRng.try_fill_bytes(&mut uid)?;
+        OsRng.fill_bytes(&mut uid);
         let server_public = loop {
             let data = Encoder::connect(&server_crypto, client_public.as_bytes(), &uid)?;
             match socket.send(&data).await {
@@ -108,8 +107,8 @@ impl<C: Crypto> Client<C> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         let shared_secret = client_secret.diffie_hellman(&server_public);
-        let session_key_bytes = kdf_shared_secret(shared_secret.as_bytes());
-        let session_crypto = C::new(&session_key_bytes).map_err(|_| CsError::CreateCrypto)?;
+        let session_key_bytes = hash(shared_secret.as_bytes());
+        let session_crypto = C::new(&session_key_bytes)?;
         conn.replace(uid, addr, Arc::new(session_crypto), server_public)?;
         let heartbeat_handle = tokio::spawn({
             let conn = conn.clone();

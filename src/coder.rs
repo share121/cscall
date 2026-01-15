@@ -19,9 +19,7 @@ impl Encoder {
         let mut associated_data = [0; UID_LEN + 1];
         associated_data[..UID_LEN].copy_from_slice(uid);
         associated_data[UID_LEN] = EventType::Encrypted;
-        session_crypto
-            .encrypt(&associated_data, buf)
-            .map_err(|_| CsError::Encrypt)?;
+        session_crypto.encrypt(&associated_data, buf)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::Encrypted);
         Ok(())
@@ -54,9 +52,7 @@ impl Encoder {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         buf.extend_from_slice(&timestamp.to_le_bytes());
         buf.extend_from_slice(uid);
-        server_crypto
-            .encrypt(&[EventType::Connect], &mut buf)
-            .map_err(|_| CsError::Encrypt)?;
+        server_crypto.encrypt(&[EventType::Connect], &mut buf)?;
         buf.push(EventType::Connect);
         Ok(buf)
     }
@@ -70,9 +66,7 @@ impl Encoder {
         let mut buf = Vec::with_capacity(PUB_KEY_LEN + UID_LEN + C::ADDITION_LEN + 1);
         buf.extend_from_slice(server_pub);
         buf.extend_from_slice(uid);
-        server_crypto
-            .encrypt(&[EventType::AckConnect], &mut buf)
-            .map_err(|_| CsError::Encrypt)?;
+        server_crypto.encrypt(&[EventType::AckConnect], &mut buf)?;
         buf.push(EventType::AckConnect);
         Ok(buf)
     }
@@ -88,9 +82,7 @@ impl Encoder {
         let mut associated_data = [0; UID_LEN + 1];
         associated_data[..UID_LEN].copy_from_slice(uid);
         associated_data[UID_LEN] = EventType::Heartbeat;
-        session_crypto
-            .encrypt(&associated_data, &mut buf)
-            .map_err(|_| CsError::Encrypt)?;
+        session_crypto.encrypt(&associated_data, &mut buf)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::Heartbeat);
         Ok(buf)
@@ -107,9 +99,7 @@ impl Encoder {
         let mut associated_data = [0; UID_LEN + 1];
         associated_data[..UID_LEN].copy_from_slice(uid);
         associated_data[UID_LEN] = EventType::AckHeartbeat;
-        session_crypto
-            .encrypt(&associated_data, &mut buf)
-            .map_err(|_| CsError::Encrypt)?;
+        session_crypto.encrypt(&associated_data, &mut buf)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::AckHeartbeat);
         Ok(buf)
@@ -153,9 +143,7 @@ impl Decoder {
         let mut associated_data = [0; UID_LEN + 1];
         associated_data[..UID_LEN].copy_from_slice(&uid);
         associated_data[UID_LEN] = event_type;
-        session_crypto
-            .decrypt(&associated_data, buf)
-            .map_err(|_| CsError::Decrypt)?;
+        session_crypto.decrypt(&associated_data, buf)?;
 
         // 解析 Count
         let count_start = buf.len() - COUNT_LEN;
@@ -204,9 +192,7 @@ impl Decoder {
             return Err(CsError::InvalidFormat);
         }
         buf.pop();
-        server_crypto
-            .decrypt(&[EventType::Connect], buf)
-            .map_err(|_| CsError::Decrypt)?;
+        server_crypto.decrypt(&[EventType::Connect], buf)?;
         // 结构: [ClientPub] [TimeStamp] [Uid]
         // 提取 Uid
         let uid_start = buf.len() - UID_LEN;
@@ -235,9 +221,7 @@ impl Decoder {
             return Err(CsError::InvalidFormat);
         }
         buf.pop();
-        server_crypto
-            .decrypt(&[EventType::AckConnect], buf)
-            .map_err(|_| CsError::Decrypt)?;
+        server_crypto.decrypt(&[EventType::AckConnect], buf)?;
         let uid: [u8; UID_LEN] = buf[PUB_KEY_LEN..].try_into().unwrap();
         let server_pub: [u8; PUB_KEY_LEN] = buf[..PUB_KEY_LEN].try_into().unwrap();
         let server_pub = PublicKey::from(server_pub);

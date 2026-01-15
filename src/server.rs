@@ -3,7 +3,7 @@ use crate::{
     coder::{Decoder, Encoder},
     common::{CsError, heartbeat},
     connection::Connection,
-    crypto::{Crypto, kdf_shared_secret},
+    crypto::{Crypto, hash},
 };
 use dashmap::DashMap;
 use std::{
@@ -30,17 +30,16 @@ impl<C: Crypto> Drop for Server<C> {
 
 impl<C: Crypto> Server<C> {
     pub async fn new(pwd: &[u8], socket: Arc<UdpSocket>) -> Result<Self, CsError> {
-        let server_salt = C::gen_salt().map_err(|_| CsError::GenerateSalt)?;
+        let server_salt = C::gen_salt()?;
         let server_key = tokio::task::spawn_blocking({
             let pwd = pwd.to_vec();
             let server_salt = server_salt.clone();
             move || C::derive_key(&pwd, &server_salt)
         })
         .await
-        .map_err(|_| CsError::DeriveKey)?
-        .map_err(|_| CsError::DeriveKey)?;
+        .map_err(|_| CsError::Crypto)??;
         let server_salt = Arc::new(Mutex::new(server_salt));
-        let server_crypto = C::new(server_key.as_ref()).map_err(|_| CsError::CreateCrypto)?;
+        let server_crypto = C::new(server_key.as_ref())?;
         let connections: Arc<DashMap<[u8; UID_LEN], Connection<C>>> = Arc::new(DashMap::new());
         let heartbeat_handle = tokio::spawn({
             let connections = connections.clone();
@@ -136,9 +135,8 @@ impl<C: Crypto> Server<C> {
                 let server_public = PublicKey::from(&server_secret);
                 let shared_secret = server_secret.diffie_hellman(&client_public);
                 // 计算 Session Key
-                let session_key_bytes = kdf_shared_secret(shared_secret.as_bytes());
-                let session_crypto =
-                    C::new(&session_key_bytes).map_err(|_| CsError::CreateCrypto)?;
+                let session_key_bytes = hash(shared_secret.as_bytes());
+                let session_crypto = C::new(&session_key_bytes)?;
                 let data =
                     Encoder::ack_connect(&self.server_crypto, server_public.as_bytes(), &uid)?;
                 self.socket.send_to(&data, addr).await?;

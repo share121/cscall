@@ -8,20 +8,8 @@ pub enum CsError {
     Socket(#[from] std::io::Error),
 
     // 加解密
-    #[error("Failed to mix salt")]
-    MixSalt,
-    #[error("Failed to derive key")]
-    DeriveKey,
-    #[error("Failed to create crypto")]
-    CreateCrypto,
-    #[error("Failed to generate UID")]
-    GenerateUID(#[from] rand::Error),
-    #[error("Failed to encrypt data")]
-    Encrypt,
-    #[error("Failed to decrypt data")]
-    Decrypt,
-    #[error("Failed to generate salt")]
-    GenerateSalt,
+    #[error("Failed to crypto")]
+    Crypto,
 
     // 连接
     #[error("Connection broken")]
