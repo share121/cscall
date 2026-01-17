@@ -221,13 +221,13 @@ impl<C: Crypto> Client<C> {
     }
 }
 
-pub async fn heartbeat<C: Crypto>(
+async fn heartbeat<C: Crypto>(
     conn: &Connection<C>,
     socket: &UdpSocket,
     last_send: &Mutex<Instant>,
     buf: &mut Vec<u8>,
 ) -> Result<(), CsError> {
-    let (session_crypto, count, uid, addr) = {
+    let (session_crypto, count, uid, _) = {
         let mut guard = conn.inner()?;
         let guard_ref = guard.as_mut().ok_or(CsError::ConnectionBroken)?;
         if guard_ref.last_recv.elapsed() > guard_ref.ttl {
@@ -243,7 +243,7 @@ pub async fn heartbeat<C: Crypto>(
         guard_ref.pre_encrypt()
     };
     Encoder::heartbeat(&*session_crypto, count, &uid, buf)?;
-    socket.send_to(buf, addr).await?;
+    socket.send(buf).await?;
     *last_send.lock().unwrap() = Instant::now();
     tracing::debug!("Heartbeat");
     Ok(())
