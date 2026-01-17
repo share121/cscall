@@ -1,23 +1,46 @@
-use crate::{MAX_LIFE, REORDER_WINDOW, UID_LEN, common::CsError, crypto::Crypto};
+use crate::{CsError, REORDER_WINDOW, UID_LEN, crypto::Crypto};
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
 };
+use tokio::time::Instant;
 use x25519_dalek::PublicKey;
 
 pub struct ConnectionInner<C: Crypto> {
+    pub uid: [u8; UID_LEN],
     pub addr: SocketAddr,
     pub count: u64,
-    pub session_crypto: Arc<C>,
-    pub uid: [u8; UID_LEN],
-    pub life: u32,
     pub max_count: u64,
     pub replay_bitmap: u128,
+    pub session_crypto: Arc<C>,
+    pub last_recv: Instant,
+    pub ttl: Duration,
     pub server_public: PublicKey,
 }
 
 impl<C: Crypto> ConnectionInner<C> {
-    /// Return: (session_crypto, count, uid)
+    pub fn new(
+        uid: [u8; UID_LEN],
+        addr: SocketAddr,
+        session_crypto: Arc<C>,
+        server_public: PublicKey,
+        ttl: Duration,
+    ) -> Self {
+        Self {
+            uid,
+            addr,
+            session_crypto,
+            server_public,
+            ttl,
+            last_recv: Instant::now(),
+            count: 1,
+            max_count: 0,
+            replay_bitmap: 0,
+        }
+    }
+
+    /// Return: (session_crypto, count, uid, addr)
     pub fn pre_encrypt(&mut self) -> (Arc<C>, u64, [u8; UID_LEN], SocketAddr) {
         let count = self.count;
         self.count += 1;
@@ -35,7 +58,6 @@ impl<C: Crypto> ConnectionInner<C> {
             return Err(CsError::InvalidUid(uid));
         }
         if count > self.max_count {
-            self.life = MAX_LIFE;
             if let Some(addr) = addr {
                 self.addr = addr;
             }
@@ -65,20 +87,13 @@ impl<C: Crypto> ConnectionInner<C> {
                 }
             }
         }
+        self.last_recv = Instant::now();
         Ok(())
     }
 }
 
 pub struct Connection<C: Crypto> {
-    inner: Arc<Mutex<Option<ConnectionInner<C>>>>,
-}
-
-impl<C: Crypto> Clone for Connection<C> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
+    inner: Mutex<Option<ConnectionInner<C>>>,
 }
 
 impl<C: Crypto> Connection<C> {
@@ -87,23 +102,25 @@ impl<C: Crypto> Connection<C> {
         addr: SocketAddr,
         session_crypto: Arc<C>,
         server_public: PublicKey,
+        ttl: Duration,
     ) -> Self {
+        let conn = ConnectionInner::new(uid, addr, session_crypto, server_public, ttl);
         Self {
-            inner: Arc::new(Mutex::new(Some(ConnectionInner {
-                uid,
-                addr,
-                session_crypto,
-                server_public,
-                count: 1,
-                life: MAX_LIFE,
-                max_count: 0,
-                replay_bitmap: 0,
-            }))),
+            inner: Mutex::new(Some(conn)),
         }
     }
 
     pub fn inner(&self) -> Result<MutexGuard<'_, Option<ConnectionInner<C>>>, CsError> {
         self.inner.lock().map_err(|_| CsError::ConnectionBroken)
+    }
+
+    pub fn with<F, R>(&self, f: F) -> Result<R, CsError>
+    where
+        F: FnOnce(&mut ConnectionInner<C>) -> R,
+    {
+        let mut guard = self.inner()?;
+        let inner_ref = guard.as_mut().ok_or(CsError::ConnectionBroken)?;
+        Ok(f(inner_ref))
     }
 
     pub fn replace(
@@ -112,26 +129,16 @@ impl<C: Crypto> Connection<C> {
         addr: SocketAddr,
         session_crypto: Arc<C>,
         server_public: PublicKey,
+        ttl: Duration,
     ) -> Result<(), CsError> {
-        self.inner()?.replace(ConnectionInner {
-            uid,
-            addr,
-            session_crypto,
-            server_public,
-            count: 1,
-            life: MAX_LIFE,
-            max_count: 0,
-            replay_bitmap: 0,
-        });
+        let conn = ConnectionInner::new(uid, addr, session_crypto, server_public, ttl);
+        self.inner()?.replace(conn);
         Ok(())
     }
 
-    /// Return: (session_crypto, count, uid)
+    /// Return: (session_crypto, count, uid, addr)
     pub fn pre_encrypt(&self) -> Result<(Arc<C>, u64, [u8; UID_LEN], SocketAddr), CsError> {
-        self.inner()?
-            .as_mut()
-            .ok_or(CsError::ConnectionBroken)
-            .map(|c| c.pre_encrypt())
+        self.with(|c| c.pre_encrypt())
     }
 
     pub fn check_and_update(
@@ -140,31 +147,26 @@ impl<C: Crypto> Connection<C> {
         uid: [u8; UID_LEN],
         addr: Option<SocketAddr>,
     ) -> Result<(), CsError> {
-        self.inner()?
-            .as_mut()
-            .ok_or(CsError::ConnectionBroken)
-            .and_then(|c| c.check_and_update(count, uid, addr))
+        self.with(|c| c.check_and_update(count, uid, addr))?
     }
 
     pub fn sessiton_crypto(&self) -> Result<Arc<C>, CsError> {
-        self.inner()?
-            .as_ref()
-            .ok_or(CsError::ConnectionBroken)
-            .map(|c| c.session_crypto.clone())
+        self.with(|c| c.session_crypto.clone())
     }
 
     pub fn server_public(&self) -> Result<PublicKey, CsError> {
-        self.inner()?
-            .as_ref()
-            .ok_or(CsError::ConnectionBroken)
-            .map(|c| c.server_public)
+        self.with(|c| c.server_public)
+    }
+
+    pub fn is_timeout(&self) -> bool {
+        self.with(|c| c.last_recv.elapsed() > c.ttl).unwrap_or(true)
     }
 }
 
 impl<C: Crypto> Default for Connection<C> {
     fn default() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(None)),
+            inner: Mutex::new(None),
         }
     }
 }

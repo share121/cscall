@@ -1,4 +1,4 @@
-use crate::common::CsError;
+use crate::CsError;
 
 #[cfg(feature = "aes256gcm")]
 pub mod aes256gcm;
@@ -20,8 +20,8 @@ pub trait Crypto: Send + Sync + 'static {
         Self: Sized;
     fn gen_salt() -> Result<Self::Salt, CsError>;
     fn derive_key(pwd: &[u8], salt: &Self::Salt) -> Result<Self::Key, CsError>;
-    fn encrypt(&self, associated_data: &[u8], data: &mut Vec<u8>) -> Result<(), CsError>;
-    fn decrypt(&self, associated_data: &[u8], data: &mut Vec<u8>) -> Result<(), CsError>;
+    fn encrypt(&self, associated_data: &[u8], buf: &mut Vec<u8>) -> Result<(), CsError>;
+    fn decrypt(&self, associated_data: &[u8], buf: &mut Vec<u8>) -> Result<(), CsError>;
 }
 
 pub fn hash(data: &[u8]) -> [u8; 32] {

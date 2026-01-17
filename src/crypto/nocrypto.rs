@@ -1,4 +1,4 @@
-use crate::{common::CsError, crypto::Crypto};
+use crate::{CsError, crypto::Crypto};
 
 pub struct NoCrypto;
 impl Crypto for NoCrypto {
