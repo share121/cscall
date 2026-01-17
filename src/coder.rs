@@ -1,24 +1,28 @@
-use x25519_dalek::PublicKey;
-
 use crate::{
     COUNT_LEN, EventType, PUB_KEY_LEN, TIMESTAMP_LEN, UID_LEN, common::CsError, crypto::Crypto,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
+use x25519_dalek::PublicKey;
+
+pub fn build_associated_data(uid: &[u8; UID_LEN], event_type: u8) -> [u8; UID_LEN + 1] {
+    let mut associated_data = [0; UID_LEN + 1];
+    associated_data[..UID_LEN].copy_from_slice(uid);
+    associated_data[UID_LEN] = event_type;
+    associated_data
+}
 
 pub struct Encoder;
 impl Encoder {
     /// SessionKey(PlainText + Count) + Uid + Encrypted
     pub fn encrypted<C: Crypto>(
-        buf: &mut Vec<u8>,
         session_crypto: &C,
         count: u64,
         uid: &[u8; UID_LEN],
+        buf: &mut Vec<u8>,
     ) -> Result<(), CsError> {
         buf.reserve(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
         buf.extend_from_slice(&count.to_le_bytes());
-        let mut associated_data = [0; UID_LEN + 1];
-        associated_data[..UID_LEN].copy_from_slice(uid);
-        associated_data[UID_LEN] = EventType::Encrypted;
+        let associated_data = build_associated_data(uid, EventType::Encrypted);
         session_crypto.encrypt(&associated_data, buf)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::Encrypted);
@@ -33,11 +37,11 @@ impl Encoder {
     }
 
     /// ServerSalt + AckHello
-    pub fn ack_hello<C: Crypto>(server_salt: &C::Salt) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(C::SALT_LEN + 1);
+    pub fn ack_hello<C: Crypto>(server_salt: &C::Salt, buf: &mut Vec<u8>) -> () {
+        buf.clear();
+        buf.reserve(C::SALT_LEN + 1);
         buf.extend_from_slice(server_salt.as_ref());
         buf.push(EventType::AckHello);
-        buf
     }
 
     /// ServerKey(ClientPub + TimeStamp + Uid) + Connect
@@ -45,30 +49,33 @@ impl Encoder {
         server_crypto: &C,
         client_pub: &[u8; PUB_KEY_LEN],
         uid: &[u8; UID_LEN],
-    ) -> Result<Vec<u8>, CsError> {
-        let mut buf =
-            Vec::with_capacity(PUB_KEY_LEN + TIMESTAMP_LEN + UID_LEN + C::ADDITION_LEN + 1);
+        buf: &mut Vec<u8>,
+    ) -> Result<(), CsError> {
+        buf.clear();
+        buf.reserve(PUB_KEY_LEN + TIMESTAMP_LEN + UID_LEN + C::ADDITION_LEN + 1);
         buf.extend_from_slice(client_pub);
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         buf.extend_from_slice(&timestamp.to_le_bytes());
         buf.extend_from_slice(uid);
-        server_crypto.encrypt(&[EventType::Connect], &mut buf)?;
+        server_crypto.encrypt(&[EventType::Connect], buf)?;
         buf.push(EventType::Connect);
-        Ok(buf)
+        Ok(())
     }
 
-    /// ServerKey(ServerPub + Uid) + AckConnect
+    /// ServerKey(ServerPub) + AckConnect
     pub fn ack_connect<C: Crypto>(
         server_crypto: &C,
         server_pub: &[u8; PUB_KEY_LEN],
         uid: &[u8; UID_LEN],
-    ) -> Result<Vec<u8>, CsError> {
-        let mut buf = Vec::with_capacity(PUB_KEY_LEN + UID_LEN + C::ADDITION_LEN + 1);
+        buf: &mut Vec<u8>,
+    ) -> Result<(), CsError> {
+        buf.clear();
+        buf.reserve(PUB_KEY_LEN + C::ADDITION_LEN + 1);
         buf.extend_from_slice(server_pub);
-        buf.extend_from_slice(uid);
-        server_crypto.encrypt(&[EventType::AckConnect], &mut buf)?;
+        let associated_data = build_associated_data(uid, EventType::AckConnect);
+        server_crypto.encrypt(&associated_data, buf)?;
         buf.push(EventType::AckConnect);
-        Ok(buf)
+        Ok(())
     }
 
     /// SessionKey(Count) + Uid + Heartbeat
@@ -76,16 +83,16 @@ impl Encoder {
         session_crypto: &C,
         count: u64,
         uid: &[u8; UID_LEN],
-    ) -> Result<Vec<u8>, CsError> {
-        let mut buf = Vec::with_capacity(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
+        buf: &mut Vec<u8>,
+    ) -> Result<(), CsError> {
+        buf.clear();
+        buf.reserve(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
         buf.extend_from_slice(&count.to_le_bytes());
-        let mut associated_data = [0; UID_LEN + 1];
-        associated_data[..UID_LEN].copy_from_slice(uid);
-        associated_data[UID_LEN] = EventType::Heartbeat;
-        session_crypto.encrypt(&associated_data, &mut buf)?;
+        let associated_data = build_associated_data(uid, EventType::Heartbeat);
+        session_crypto.encrypt(&associated_data, buf)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::Heartbeat);
-        Ok(buf)
+        Ok(())
     }
 
     /// SessionKey(Count) + Uid + AckHeartbeat
@@ -93,26 +100,26 @@ impl Encoder {
         session_crypto: &C,
         count: u64,
         uid: &[u8; UID_LEN],
-    ) -> Result<Vec<u8>, CsError> {
-        let mut buf = Vec::with_capacity(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
+        buf: &mut Vec<u8>,
+    ) -> Result<(), CsError> {
+        buf.clear();
+        buf.reserve(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
         buf.extend_from_slice(&count.to_le_bytes());
-        let mut associated_data = [0; UID_LEN + 1];
-        associated_data[..UID_LEN].copy_from_slice(uid);
-        associated_data[UID_LEN] = EventType::AckHeartbeat;
-        session_crypto.encrypt(&associated_data, &mut buf)?;
+        let associated_data = build_associated_data(uid, EventType::AckHeartbeat);
+        session_crypto.encrypt(&associated_data, buf)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::AckHeartbeat);
-        Ok(buf)
+        Ok(())
     }
 }
 
 pub struct Decoder;
 impl Decoder {
-    pub fn peek_uid(buf: &[u8], offset: usize) -> Result<[u8; UID_LEN], CsError> {
-        if buf.len() < UID_LEN + offset {
+    pub fn peek_uid(buf: &[u8]) -> Result<[u8; UID_LEN], CsError> {
+        if buf.len() < UID_LEN + 1 {
             return Err(CsError::InvalidFormat);
         }
-        let uid_start = buf.len() - UID_LEN - offset;
+        let uid_start = buf.len() - UID_LEN - 1;
         let uid: [u8; UID_LEN] = buf[uid_start..uid_start + UID_LEN].try_into().unwrap();
         Ok(uid)
     }
@@ -140,9 +147,7 @@ impl Decoder {
         let uid: [u8; UID_LEN] = buf[uid_start..].try_into().unwrap();
         buf.truncate(uid_start);
 
-        let mut associated_data = [0; UID_LEN + 1];
-        associated_data[..UID_LEN].copy_from_slice(&uid);
-        associated_data[UID_LEN] = event_type;
+        let associated_data = build_associated_data(&uid, event_type);
         session_crypto.decrypt(&associated_data, buf)?;
 
         // 解析 Count
@@ -193,7 +198,7 @@ impl Decoder {
         }
         buf.pop();
         server_crypto.decrypt(&[EventType::Connect], buf)?;
-        // 结构: [ClientPub] [TimeStamp] [Uid]
+
         // 提取 Uid
         let uid_start = buf.len() - UID_LEN;
         let uid: [u8; UID_LEN] = buf[uid_start..].try_into().unwrap();
@@ -208,23 +213,26 @@ impl Decoder {
         Ok((client_pub, timestamp, uid))
     }
 
-    /// ServerKey(ServerPub + Uid) + AckConnect
-    /// Return: (ServerPub, Uid)
+    /// ServerKey(ServerPub) + AckConnect
+    /// Return: ServerPub
     pub fn ack_connect<C: Crypto>(
         server_crypto: &C,
+        uid: &[u8; UID_LEN],
         buf: &mut Vec<u8>,
-    ) -> Result<(PublicKey, [u8; UID_LEN]), CsError> {
+    ) -> Result<PublicKey, CsError> {
         if buf.last() != Some(&EventType::AckConnect) {
             return Err(CsError::InvalidType(buf.last().cloned()));
         }
-        if buf.len() != PUB_KEY_LEN + UID_LEN + C::ADDITION_LEN + 1 {
+        if buf.len() != PUB_KEY_LEN + C::ADDITION_LEN + 1 {
             return Err(CsError::InvalidFormat);
         }
         buf.pop();
-        server_crypto.decrypt(&[EventType::AckConnect], buf)?;
-        let uid: [u8; UID_LEN] = buf[PUB_KEY_LEN..].try_into().unwrap();
-        let server_pub: [u8; PUB_KEY_LEN] = buf[..PUB_KEY_LEN].try_into().unwrap();
+
+        let associated_data = build_associated_data(uid, EventType::AckConnect);
+        server_crypto.decrypt(&associated_data, buf)?;
+
+        let server_pub: [u8; PUB_KEY_LEN] = buf[..].try_into().unwrap();
         let server_pub = PublicKey::from(server_pub);
-        Ok((server_pub, uid))
+        Ok(server_pub)
     }
 }
