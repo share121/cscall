@@ -40,6 +40,8 @@ pub enum CsError {
     // IO
     #[error("Failed to send data")]
     Socket(#[from] std::io::Error),
+    #[error("Recv Timeout")]
+    RecvTimeout(#[from] tokio::time::error::Elapsed),
 
     // 加解密
     #[error("Failed to crypto")]

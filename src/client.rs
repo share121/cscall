@@ -219,6 +219,14 @@ impl<C: Crypto> Client<C> {
             }
         }
     }
+
+    pub async fn recv_timeout(
+        &self,
+        buf: &mut Vec<u8>,
+        timeout: Duration,
+    ) -> Result<Option<([u8; UID_LEN], u64)>, CsError> {
+        tokio::time::timeout(timeout, self.recv(buf)).await?
+    }
 }
 
 async fn heartbeat<C: Crypto>(

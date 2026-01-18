@@ -184,6 +184,14 @@ impl<C: Crypto> Server<C> {
         }
     }
 
+    pub async fn recv_timeout(
+        &self,
+        buf: &mut Vec<u8>,
+        timeout: Duration,
+    ) -> Result<Option<([u8; UID_LEN], u64)>, CsError> {
+        tokio::time::timeout(timeout, self.recv(buf)).await?
+    }
+
     pub async fn get(&self, uid: &[u8; UID_LEN]) -> Result<Channel<C>, CsError> {
         Ok(Channel {
             conn: Arc::downgrade(&*self.connections.get(uid).ok_or(CsError::ConnectionBroken)?),
