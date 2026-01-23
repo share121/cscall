@@ -9,7 +9,7 @@ pub const UID_LEN: usize = 16;
 pub const COUNT_LEN: usize = size_of::<u64>();
 pub const TIMESTAMP_LEN: usize = size_of::<u64>();
 pub const REORDER_WINDOW: u64 = 128;
-pub const PUB_KEY_LEN: usize = 32;
+pub type UID = [u8; UID_LEN];
 
 #[allow(non_snake_case, non_upper_case_globals)]
 pub mod EventType {
@@ -58,7 +58,7 @@ pub enum CsError {
     #[error("Invalid format")]
     InvalidFormat,
     #[error("Invalid uid")]
-    InvalidUid([u8; UID_LEN]),
+    InvalidUid(UID),
     #[error("Invalid counter")]
     InvalidCounter(u64),
     #[error("Invalid timestamp")]

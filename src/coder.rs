@@ -1,8 +1,7 @@
-use crate::{COUNT_LEN, CsError, EventType, PUB_KEY_LEN, TIMESTAMP_LEN, UID_LEN, crypto::Crypto};
+use crate::{COUNT_LEN, CsError, EventType, TIMESTAMP_LEN, UID, UID_LEN, crypto::Crypto};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use x25519_dalek::PublicKey;
 
-pub fn build_associated_data(uid: &[u8; UID_LEN], event_type: u8) -> [u8; UID_LEN + 1] {
+pub fn build_associated_data(uid: &UID, event_type: u8) -> [u8; UID_LEN + 1] {
     let mut associated_data = [0; UID_LEN + 1];
     associated_data[..UID_LEN].copy_from_slice(uid);
     associated_data[UID_LEN] = event_type;
@@ -15,7 +14,7 @@ impl Encoder {
     pub fn encrypted<C: Crypto>(
         session_crypto: &C,
         count: u64,
-        uid: &[u8; UID_LEN],
+        uid: &UID,
         buf: &mut Vec<u8>,
     ) -> Result<(), CsError> {
         buf.reserve(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
@@ -45,14 +44,17 @@ impl Encoder {
     /// ServerKey(ClientPub + Ttl + TimeStamp + Uid) + Connect
     pub fn connect<C: Crypto>(
         server_crypto: &C,
-        client_pub: &[u8; PUB_KEY_LEN],
+        client_pub: &C::PublicKey,
         ttl: Duration,
-        uid: &[u8; UID_LEN],
+        uid: &UID,
         buf: &mut Vec<u8>,
     ) -> Result<(), CsError> {
         buf.clear();
-        buf.reserve(PUB_KEY_LEN + size_of::<u64>() + TIMESTAMP_LEN + UID_LEN + C::ADDITION_LEN + 1);
-        buf.extend_from_slice(client_pub);
+        let client_pub = client_pub.as_ref();
+        buf.reserve(
+            client_pub.len() + size_of::<u64>() + TIMESTAMP_LEN + UID_LEN + C::ADDITION_LEN + 1,
+        );
+        buf.extend_from_slice(client_pub.as_ref());
         buf.extend_from_slice(&ttl.as_secs().to_le_bytes());
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         buf.extend_from_slice(&timestamp.to_le_bytes());
@@ -65,12 +67,13 @@ impl Encoder {
     /// ServerKey(ServerPub) + AckConnect
     pub fn ack_connect<C: Crypto>(
         server_crypto: &C,
-        server_pub: &[u8; PUB_KEY_LEN],
-        uid: &[u8; UID_LEN],
+        server_pub: &C::PublicKey,
+        uid: &UID,
         buf: &mut Vec<u8>,
     ) -> Result<(), CsError> {
         buf.clear();
-        buf.reserve(PUB_KEY_LEN + C::ADDITION_LEN + 1);
+        let server_pub = server_pub.as_ref();
+        buf.reserve(server_pub.len() + C::ADDITION_LEN + 1);
         buf.extend_from_slice(server_pub);
         let associated_data = build_associated_data(uid, EventType::AckConnect);
         server_crypto.encrypt(&associated_data, buf)?;
@@ -82,7 +85,7 @@ impl Encoder {
     pub fn heartbeat<C: Crypto>(
         session_crypto: &C,
         count: u64,
-        uid: &[u8; UID_LEN],
+        uid: &UID,
         buf: &mut Vec<u8>,
     ) -> Result<(), CsError> {
         buf.clear();
@@ -99,7 +102,7 @@ impl Encoder {
     pub fn ack_heartbeat<C: Crypto>(
         session_crypto: &C,
         count: u64,
-        uid: &[u8; UID_LEN],
+        uid: &UID,
         buf: &mut Vec<u8>,
     ) -> Result<(), CsError> {
         buf.clear();
@@ -115,12 +118,12 @@ impl Encoder {
 
 pub struct Decoder;
 impl Decoder {
-    pub fn peek_uid(buf: &[u8]) -> Result<[u8; UID_LEN], CsError> {
+    pub fn peek_uid(buf: &[u8]) -> Result<UID, CsError> {
         if buf.len() < UID_LEN + 1 {
             return Err(CsError::InvalidFormat);
         }
         let uid_start = buf.len() - UID_LEN - 1;
-        let uid: [u8; UID_LEN] = buf[uid_start..uid_start + UID_LEN].try_into().unwrap();
+        let uid: UID = buf[uid_start..uid_start + UID_LEN].try_into().unwrap();
         Ok(uid)
     }
 
@@ -130,7 +133,7 @@ impl Decoder {
     pub fn encrypted<C: Crypto>(
         session_crypto: &C,
         buf: &mut Vec<u8>,
-    ) -> Result<(u64, [u8; UID_LEN]), CsError> {
+    ) -> Result<(u64, UID), CsError> {
         if !matches!(
             buf.last(),
             Some(&EventType::Encrypted | &EventType::Heartbeat | &EventType::AckHeartbeat)
@@ -144,7 +147,7 @@ impl Decoder {
 
         // 提取 Uid (外部)
         let uid_start = buf.len() - UID_LEN;
-        let uid: [u8; UID_LEN] = buf[uid_start..].try_into().unwrap();
+        let uid: UID = buf[uid_start..].try_into().unwrap();
         buf.truncate(uid_start);
 
         let associated_data = build_associated_data(&uid, event_type);
@@ -189,12 +192,12 @@ impl Decoder {
     pub fn connect<C: Crypto>(
         server_crypto: &C,
         buf: &mut Vec<u8>,
-    ) -> Result<(PublicKey, Duration, u64, [u8; UID_LEN]), CsError> {
+    ) -> Result<(C::PublicKey, Duration, u64, UID), CsError> {
         if buf.last() != Some(&EventType::Connect) {
             return Err(CsError::InvalidType(buf.last().cloned()));
         }
         if buf.len()
-            != PUB_KEY_LEN + size_of::<u64>() + TIMESTAMP_LEN + UID_LEN + C::ADDITION_LEN + 1
+            != C::PUB_KEY_LEN + size_of::<u64>() + TIMESTAMP_LEN + UID_LEN + C::ADDITION_LEN + 1
         {
             return Err(CsError::InvalidFormat);
         }
@@ -203,7 +206,7 @@ impl Decoder {
 
         // 提取 Uid
         let uid_start = buf.len() - UID_LEN;
-        let uid: [u8; UID_LEN] = buf[uid_start..].try_into().unwrap();
+        let uid: UID = buf[uid_start..].try_into().unwrap();
         buf.truncate(uid_start);
 
         // 提取 Timestamp
@@ -212,12 +215,12 @@ impl Decoder {
         buf.truncate(ts_start);
 
         // 提取 Ttl
-        let ttl = u64::from_le_bytes(buf[PUB_KEY_LEN..].try_into().unwrap());
+        let ttl = u64::from_le_bytes(buf[C::PUB_KEY_LEN..].try_into().unwrap());
         let ttl = Duration::from_secs(ttl);
 
         // 提取 ClientPub
-        let client_pub: [u8; PUB_KEY_LEN] = buf[..PUB_KEY_LEN].try_into().unwrap();
-        let client_pub = PublicKey::from(client_pub);
+        let mut client_pub = C::PublicKey::default();
+        client_pub.as_mut().copy_from_slice(&buf[..C::PUB_KEY_LEN]);
         Ok((client_pub, ttl, timestamp, uid))
     }
 
@@ -225,13 +228,13 @@ impl Decoder {
     /// Return: ServerPub
     pub fn ack_connect<C: Crypto>(
         server_crypto: &C,
-        uid: &[u8; UID_LEN],
+        uid: &UID,
         buf: &mut Vec<u8>,
-    ) -> Result<PublicKey, CsError> {
+    ) -> Result<C::PublicKey, CsError> {
         if buf.last() != Some(&EventType::AckConnect) {
             return Err(CsError::InvalidType(buf.last().cloned()));
         }
-        if buf.len() != PUB_KEY_LEN + C::ADDITION_LEN + 1 {
+        if buf.len() != C::PUB_KEY_LEN + C::ADDITION_LEN + 1 {
             return Err(CsError::InvalidFormat);
         }
         buf.pop();
@@ -239,8 +242,8 @@ impl Decoder {
         let associated_data = build_associated_data(uid, EventType::AckConnect);
         server_crypto.decrypt(&associated_data, buf)?;
 
-        let server_pub: [u8; PUB_KEY_LEN] = buf[..].try_into().unwrap();
-        let server_pub = PublicKey::from(server_pub);
+        let mut server_pub = C::PublicKey::default();
+        server_pub.as_mut().copy_from_slice(&buf[..]);
         Ok(server_pub)
     }
 }

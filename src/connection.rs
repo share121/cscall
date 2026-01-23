@@ -1,14 +1,13 @@
-use crate::{CsError, REORDER_WINDOW, UID_LEN, crypto::Crypto};
+use crate::{CsError, REORDER_WINDOW, UID, crypto::Crypto};
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 use tokio::time::Instant;
-use x25519_dalek::PublicKey;
 
 pub struct ConnectionInner<C: Crypto> {
-    pub uid: [u8; UID_LEN],
+    pub uid: UID,
     pub addr: SocketAddr,
     pub count: u64,
     pub max_count: u64,
@@ -16,15 +15,15 @@ pub struct ConnectionInner<C: Crypto> {
     pub session_crypto: Arc<C>,
     pub last_recv: Instant,
     pub ttl: Duration,
-    pub server_public: PublicKey,
+    pub server_public: C::PublicKey,
 }
 
 impl<C: Crypto> ConnectionInner<C> {
     pub fn new(
-        uid: [u8; UID_LEN],
+        uid: UID,
         addr: SocketAddr,
         session_crypto: Arc<C>,
-        server_public: PublicKey,
+        server_public: C::PublicKey,
         ttl: Duration,
     ) -> Self {
         Self {
@@ -41,7 +40,7 @@ impl<C: Crypto> ConnectionInner<C> {
     }
 
     /// Return: (session_crypto, count, uid, addr)
-    pub fn pre_encrypt(&mut self) -> (Arc<C>, u64, [u8; UID_LEN], SocketAddr) {
+    pub fn pre_encrypt(&mut self) -> (Arc<C>, u64, UID, SocketAddr) {
         let count = self.count;
         self.count += 1;
         (self.session_crypto.clone(), count, self.uid, self.addr)
@@ -50,7 +49,7 @@ impl<C: Crypto> ConnectionInner<C> {
     pub fn check_and_update(
         &mut self,
         count: u64,
-        uid: [u8; UID_LEN],
+        uid: UID,
         addr: Option<SocketAddr>,
     ) -> Result<(), CsError> {
         if uid != self.uid {
@@ -98,10 +97,10 @@ pub struct Connection<C: Crypto> {
 
 impl<C: Crypto> Connection<C> {
     pub fn new(
-        uid: [u8; UID_LEN],
+        uid: UID,
         addr: SocketAddr,
         session_crypto: Arc<C>,
-        server_public: PublicKey,
+        server_public: C::PublicKey,
         ttl: Duration,
     ) -> Self {
         let conn = ConnectionInner::new(uid, addr, session_crypto, server_public, ttl);
@@ -125,10 +124,10 @@ impl<C: Crypto> Connection<C> {
 
     pub fn replace(
         &self,
-        uid: [u8; UID_LEN],
+        uid: UID,
         addr: SocketAddr,
         session_crypto: Arc<C>,
-        server_public: PublicKey,
+        server_public: C::PublicKey,
         ttl: Duration,
     ) -> Result<(), CsError> {
         let conn = ConnectionInner::new(uid, addr, session_crypto, server_public, ttl);
@@ -137,25 +136,25 @@ impl<C: Crypto> Connection<C> {
     }
 
     /// Return: (session_crypto, count, uid, addr)
-    pub fn pre_encrypt(&self) -> Result<(Arc<C>, u64, [u8; UID_LEN], SocketAddr), CsError> {
+    pub fn pre_encrypt(&self) -> Result<(Arc<C>, u64, UID, SocketAddr), CsError> {
         self.with(|c| c.pre_encrypt())
     }
 
     pub fn check_and_update(
         &self,
         count: u64,
-        uid: [u8; UID_LEN],
+        uid: UID,
         addr: Option<SocketAddr>,
     ) -> Result<(), CsError> {
         self.with(|c| c.check_and_update(count, uid, addr))?
     }
 
-    pub fn sessiton_crypto(&self) -> Result<Arc<C>, CsError> {
+    pub fn session_crypto(&self) -> Result<Arc<C>, CsError> {
         self.with(|c| c.session_crypto.clone())
     }
 
-    pub fn server_public(&self) -> Result<PublicKey, CsError> {
-        self.with(|c| c.server_public)
+    pub fn server_public(&self) -> Result<C::PublicKey, CsError> {
+        self.with(|c| c.server_public.clone())
     }
 
     pub fn is_timeout(&self) -> bool {

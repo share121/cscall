@@ -11,17 +11,26 @@ pub trait Crypto: Send + Sync + 'static {
     const SALT_LEN: usize;
     const KEY_LEN: usize;
     const ADDITION_LEN: usize;
+    const PUB_KEY_LEN: usize;
 
     type Salt: ByteArray;
     type Key: ByteArray;
+    type PublicKey: ByteArray;
+    type SecretKey: Send;
+    type SharedSecret: ByteArray;
 
     fn new(key: &[u8]) -> Result<Self, CsError>
     where
         Self: Sized;
     fn gen_salt() -> Result<Self::Salt, CsError>;
-    fn derive_key(pwd: &[u8], salt: &Self::Salt) -> Result<Self::Key, CsError>;
+    fn derive_key(pwd: &[u8], salt: &[u8]) -> Result<Self::Key, CsError>;
     fn encrypt(&self, associated_data: &[u8], buf: &mut Vec<u8>) -> Result<(), CsError>;
     fn decrypt(&self, associated_data: &[u8], buf: &mut Vec<u8>) -> Result<(), CsError>;
+    fn gen_keypair() -> Result<(Self::SecretKey, Self::PublicKey), CsError>;
+    fn diffie_hellman(
+        secret: Self::SecretKey,
+        public: &[u8],
+    ) -> Result<Self::SharedSecret, CsError>;
 }
 
 pub fn hash(data: &[u8]) -> [u8; 32] {

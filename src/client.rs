@@ -1,5 +1,5 @@
 use crate::{
-    CsError, EventType, UID_LEN,
+    CsError, EventType, UID, UID_LEN,
     coder::{Decoder, Encoder},
     connection::Connection,
     crypto::{Crypto, hash},
@@ -75,11 +75,12 @@ impl<T: Transport, C: Crypto> Client<T, C> {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             };
             // 生成 client_pub 并用 server_key 加密后发送 Connect 请求
-            let client_secret = x25519_dalek::EphemeralSecret::random_from_rng(rand::rngs::OsRng);
-            let client_public = x25519_dalek::PublicKey::from(&client_secret);
+            let (client_secret, client_public) = C::gen_keypair()?;
             let server_crypto = tokio::task::spawn_blocking({
                 let pwd = config.pwd.clone();
-                move || C::derive_key(&pwd, &server_salt).and_then(|key| C::new(key.as_ref()))
+                move || {
+                    C::derive_key(&pwd, server_salt.as_ref()).and_then(|key| C::new(key.as_ref()))
+                }
             })
             .await
             .or(Err(CsError::Crypto))??;
@@ -88,13 +89,7 @@ impl<T: Transport, C: Crypto> Client<T, C> {
             OsRng.fill_bytes(&mut uid);
             let mut connect_attempts = 0;
             let server_public = loop {
-                Encoder::connect(
-                    &server_crypto,
-                    client_public.as_bytes(),
-                    config.ttl,
-                    &uid,
-                    &mut buf,
-                )?;
+                Encoder::connect(&server_crypto, &client_public, config.ttl, &uid, &mut buf)?;
                 if connect_attempts > 5 {
                     tracing::warn!("Too many failed connection attempts");
                     continue 'outer;
@@ -129,8 +124,8 @@ impl<T: Transport, C: Crypto> Client<T, C> {
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             };
-            let shared_secret = client_secret.diffie_hellman(&server_public);
-            let session_crypto = C::new(&hash(shared_secret.as_bytes()))?;
+            let shared_secret = C::diffie_hellman(client_secret, server_public.as_ref())?;
+            let session_crypto = C::new(&hash(shared_secret.as_ref()))?;
             conn.replace(
                 uid,
                 target,
@@ -192,7 +187,7 @@ impl<T: Transport, C: Crypto> Client<T, C> {
         Ok(())
     }
 
-    pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<Option<([u8; UID_LEN], u64)>, CsError> {
+    pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<Option<(UID, u64)>, CsError> {
         buf.clear();
         buf.reserve(T::BUFFER_SIZE);
         let (len, addr) = self.config.transport.recv_buf_from(buf).await?;
@@ -205,7 +200,7 @@ impl<T: Transport, C: Crypto> Client<T, C> {
         match buf[len - 1] {
             event_type
             @ (EventType::Encrypted | EventType::Heartbeat | EventType::AckHeartbeat) => {
-                let session_crypto = self.conn.sessiton_crypto()?;
+                let session_crypto = self.conn.session_crypto()?;
                 let (count, uid) = Decoder::encrypted(&*session_crypto, buf)?;
                 self.conn.check_and_update(count, uid, None)?;
                 match event_type {
@@ -236,7 +231,7 @@ impl<T: Transport, C: Crypto> Client<T, C> {
         &self,
         buf: &mut Vec<u8>,
         timeout: Duration,
-    ) -> Result<Option<([u8; UID_LEN], u64)>, CsError> {
+    ) -> Result<Option<(UID, u64)>, CsError> {
         tokio::time::timeout(timeout, self.recv(buf)).await?
     }
 }

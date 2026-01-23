@@ -2,6 +2,7 @@ use crate::{CsError, crypto::Crypto};
 use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, Nonce, aead::AeadInPlace};
 use argon2::Argon2;
 use rand::{RngCore, rngs::OsRng};
+use x25519_dalek::{EphemeralSecret, PublicKey};
 
 pub struct Aes256GcmCrypto {
     cipher: Aes256Gcm,
@@ -14,8 +15,13 @@ impl Crypto for Aes256GcmCrypto {
     const SALT_LEN: usize = 32;
     const KEY_LEN: usize = 32;
     const ADDITION_LEN: usize = TAG_LEN + NONCE_LEN;
+    const PUB_KEY_LEN: usize = 32;
+
     type Salt = [u8; Self::SALT_LEN];
     type Key = [u8; Self::KEY_LEN];
+    type PublicKey = [u8; Self::PUB_KEY_LEN];
+    type SecretKey = EphemeralSecret;
+    type SharedSecret = [u8; 32];
 
     fn new(key: &[u8]) -> Result<Self, CsError> {
         let cipher = Aes256Gcm::new(key.into());
@@ -28,7 +34,7 @@ impl Crypto for Aes256GcmCrypto {
         Ok(salt)
     }
 
-    fn derive_key(pwd: &[u8], salt: &Self::Salt) -> Result<Self::Key, CsError> {
+    fn derive_key(pwd: &[u8], salt: &[u8]) -> Result<Self::Key, CsError> {
         let mut key = [0u8; Self::KEY_LEN];
         let params = argon2::Params::new(
             64 * 1024, // 64MB
@@ -65,5 +71,21 @@ impl Crypto for Aes256GcmCrypto {
         self.cipher
             .decrypt_in_place(&nonce, associated_data, buf)
             .or(Err(CsError::Crypto))
+    }
+
+    fn gen_keypair() -> Result<(Self::SecretKey, Self::PublicKey), CsError> {
+        let secret = EphemeralSecret::random_from_rng(OsRng);
+        let public = PublicKey::from(&secret);
+        Ok((secret, public.to_bytes()))
+    }
+
+    fn diffie_hellman(
+        secret: Self::SecretKey,
+        public: &[u8],
+    ) -> Result<Self::SharedSecret, CsError> {
+        let public_key: [u8; 32] = public.try_into().or(Err(CsError::Crypto))?;
+        let public_key = PublicKey::from(public_key);
+        let shared_secret = secret.diffie_hellman(&public_key);
+        Ok(shared_secret.to_bytes())
     }
 }
