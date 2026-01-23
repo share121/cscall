@@ -3,6 +3,7 @@ use crate::{
     coder::{Decoder, Encoder},
     connection::Connection,
     crypto::{Crypto, hash},
+    transport::Transport,
 };
 use rand::{RngCore, rngs::OsRng};
 use std::{
@@ -11,51 +12,55 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    net::UdpSocket,
     task::JoinHandle,
     time::{Instant, timeout},
 };
 
 #[derive(Clone)]
-pub struct ClientConfig {
-    pub socket: Arc<UdpSocket>,
+pub struct ClientConfig<T: Transport> {
+    pub transport: Arc<T>,
     pub target: SocketAddr,
     pub ttl: Duration,
     pub pwd: Arc<[u8]>,
 }
 
-pub struct Client<C: Crypto> {
-    config: ClientConfig,
+pub struct Client<T: Transport, C: Crypto> {
+    config: ClientConfig<T>,
     conn: Arc<Connection<C>>,
     heartbeat_handle: Mutex<Option<JoinHandle<()>>>,
     last_send: Arc<Mutex<Instant>>,
 }
 
-impl<C: Crypto> Drop for Client<C> {
+impl<T: Transport, C: Crypto> Drop for Client<T, C> {
     fn drop(&mut self) {
         self.close();
     }
 }
 
-impl<C: Crypto> Client<C> {
+impl<T: Transport, C: Crypto> Client<T, C> {
     pub async fn connect(
         conn: &Arc<Connection<C>>,
-        config: &ClientConfig,
+        config: &ClientConfig<T>,
         last_send: Arc<Mutex<Instant>>,
     ) -> Result<JoinHandle<()>, CsError> {
-        let mut buf = Vec::with_capacity(1500);
+        let mut buf = Vec::with_capacity(T::BUFFER_SIZE);
+        let transport = &config.transport;
+        let target = config.target;
         'outer: loop {
             // 发送 Hello 直到服务器回应 AckHello 并解析 server_salt
             let server_salt = loop {
-                match config.socket.send(&Encoder::hello()).await {
+                match transport.send_to(&Encoder::hello(), target).await {
                     Err(e) => tracing::warn!("Failed to send Hello: {e:?}"),
                     Ok(_) => {
                         buf.clear();
-                        match timeout(Duration::from_secs(10), config.socket.recv_buf(&mut buf))
+                        match timeout(Duration::from_secs(10), transport.recv_buf_from(&mut buf))
                             .await
                         {
                             Err(e) => tracing::warn!("Failed to receive AckHello Timeout: {e:?}"),
                             Ok(Err(e)) => tracing::warn!("Failed to receive AckHello: {e:?}"),
+                            Ok(Ok((_, addr))) if addr != target => {
+                                tracing::warn!("Received AckHello from unexpected address: {addr}")
+                            }
                             Ok(Ok(_)) => match Decoder::ack_hello::<C>(&buf) {
                                 Ok(s) => break s,
                                 Err(e) => tracing::warn!(
@@ -95,15 +100,20 @@ impl<C: Crypto> Client<C> {
                     continue 'outer;
                 }
                 connect_attempts += 1;
-                match config.socket.send(&buf).await {
+                match transport.send_to(&buf, target).await {
                     Err(e) => tracing::warn!("Failed to send Connect: {e:?}"),
                     Ok(_) => {
                         buf.clear();
-                        match timeout(Duration::from_secs(10), config.socket.recv_buf(&mut buf))
+                        match timeout(Duration::from_secs(10), transport.recv_buf_from(&mut buf))
                             .await
                         {
                             Err(e) => tracing::warn!("Failed to receive AckConnect Timeout: {e:?}"),
                             Ok(Err(e)) => tracing::warn!("Failed to receive AckConnect: {e:?}"),
+                            Ok(Ok((_, addr))) if addr != target => {
+                                tracing::warn!(
+                                    "Received AckConnect from unexpected address: {addr}"
+                                );
+                            }
                             Ok(Ok(_)) => {
                                 match Decoder::ack_connect(&server_crypto, &uid, &mut buf) {
                                     Ok(server_public) => break server_public,
@@ -123,7 +133,7 @@ impl<C: Crypto> Client<C> {
             let session_crypto = C::new(&hash(shared_secret.as_bytes()))?;
             conn.replace(
                 uid,
-                config.target,
+                target,
                 Arc::new(session_crypto),
                 server_public,
                 config.ttl,
@@ -131,13 +141,13 @@ impl<C: Crypto> Client<C> {
             *last_send.lock().unwrap() = Instant::now();
             let heartbeat_handle = tokio::spawn({
                 let conn = conn.clone();
-                let socket = config.socket.clone();
+                let transport = transport.clone();
                 let gap = Duration::from_secs(1).min(config.ttl / 2);
                 async move {
-                    let mut buf = Vec::with_capacity(1500);
+                    let mut buf = Vec::with_capacity(T::BUFFER_SIZE);
                     loop {
                         tokio::time::sleep(gap).await;
-                        match heartbeat(&conn, &socket, &last_send, &mut buf).await {
+                        match heartbeat(&conn, &*transport, &last_send, &mut buf).await {
                             Ok(()) => {}
                             Err(CsError::ConnectionBroken) => return,
                             Err(e) => tracing::warn!("Heartbeat error {e:?}"),
@@ -149,8 +159,7 @@ impl<C: Crypto> Client<C> {
         }
     }
 
-    pub async fn new(config: ClientConfig) -> Result<Self, CsError> {
-        config.socket.connect(config.target).await?;
+    pub async fn new(config: ClientConfig<T>) -> Result<Self, CsError> {
         let conn = Arc::new(Connection::default());
         let last_send = Arc::new(Mutex::new(Instant::now()));
         let handle = Self::connect(&conn, &config, last_send.clone()).await?;
@@ -176,17 +185,20 @@ impl<C: Crypto> Client<C> {
     }
 
     pub async fn send(&self, buf: &mut Vec<u8>) -> Result<(), CsError> {
-        let (session_crypto, count, uid, _) = self.conn.pre_encrypt()?;
+        let (session_crypto, count, uid, addr) = self.conn.pre_encrypt()?;
         Encoder::encrypted(&*session_crypto, count, &uid, buf)?;
-        self.config.socket.send(buf).await?;
+        self.config.transport.send_to(buf, addr).await?;
         *self.last_send.lock().unwrap() = Instant::now();
         Ok(())
     }
 
     pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<Option<([u8; UID_LEN], u64)>, CsError> {
         buf.clear();
-        buf.reserve(1500);
-        let len = self.config.socket.recv_buf(buf).await?;
+        buf.reserve(T::BUFFER_SIZE);
+        let (len, addr) = self.config.transport.recv_buf_from(buf).await?;
+        if addr != self.config.target {
+            return Err(CsError::InvalidFormat);
+        }
         if len == 0 {
             return Err(CsError::InvalidFormat);
         }
@@ -200,9 +212,9 @@ impl<C: Crypto> Client<C> {
                     EventType::Encrypted => Ok(Some((uid, count))),
                     EventType::Heartbeat => {
                         tracing::debug!("Received heartbeat Request");
-                        let (session_crypto, count, uid, _) = self.conn.pre_encrypt()?;
+                        let (session_crypto, count, uid, addr) = self.conn.pre_encrypt()?;
                         Encoder::ack_heartbeat(&*session_crypto, count, &uid, buf)?;
-                        self.config.socket.send(buf).await?;
+                        self.config.transport.send_to(buf, addr).await?;
                         *self.last_send.lock().unwrap() = Instant::now();
                         Ok(None)
                     }
@@ -229,13 +241,13 @@ impl<C: Crypto> Client<C> {
     }
 }
 
-async fn heartbeat<C: Crypto>(
+async fn heartbeat<T: Transport, C: Crypto>(
     conn: &Connection<C>,
-    socket: &UdpSocket,
+    transport: &T,
     last_send: &Mutex<Instant>,
     buf: &mut Vec<u8>,
 ) -> Result<(), CsError> {
-    let (session_crypto, count, uid, _) = {
+    let (session_crypto, count, uid, addr) = {
         let mut guard = conn.inner()?;
         let guard_ref = guard.as_mut().ok_or(CsError::ConnectionBroken)?;
         if guard_ref.last_recv.elapsed() > guard_ref.ttl {
@@ -251,7 +263,7 @@ async fn heartbeat<C: Crypto>(
         guard_ref.pre_encrypt()
     };
     Encoder::heartbeat(&*session_crypto, count, &uid, buf)?;
-    socket.send(buf).await?;
+    transport.send_to(buf, addr).await?;
     *last_send.lock().unwrap() = Instant::now();
     tracing::debug!("Heartbeat");
     Ok(())

@@ -3,13 +3,14 @@ use crate::{
     coder::{Decoder, Encoder},
     connection::Connection,
     crypto::{Crypto, hash},
+    transport::Transport,
 };
 use dashmap::DashMap;
 use std::{
     sync::{Arc, Mutex, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{net::UdpSocket, time::Instant};
+use tokio::time::Instant;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 struct Secure<C: Crypto> {
@@ -55,21 +56,21 @@ impl<C: Crypto> Secure<C> {
     }
 }
 
-pub struct Server<C: Crypto> {
-    socket: Arc<UdpSocket>,
+pub struct Server<T: Transport, C: Crypto> {
+    transport: Arc<T>,
     secure: Secure<C>,
     connections: Arc<DashMap<[u8; UID_LEN], Arc<Connection<C>>>>,
     heartbeat_handle: tokio::task::JoinHandle<()>,
 }
 
-impl<C: Crypto> Drop for Server<C> {
+impl<T: Transport, C: Crypto> Drop for Server<T, C> {
     fn drop(&mut self) {
         self.heartbeat_handle.abort();
     }
 }
 
-impl<C: Crypto> Server<C> {
-    pub async fn new(pwd: Arc<[u8]>, socket: Arc<UdpSocket>) -> Result<Self, CsError> {
+impl<T: Transport, C: Crypto> Server<T, C> {
+    pub async fn new(pwd: Arc<[u8]>, transport: Arc<T>) -> Result<Self, CsError> {
         let secure = Secure::with_pwd(pwd.clone()).await?;
         let connections: Arc<DashMap<[u8; UID_LEN], Arc<Connection<C>>>> = Arc::new(DashMap::new());
         let heartbeat_handle = tokio::spawn({
@@ -97,7 +98,7 @@ impl<C: Crypto> Server<C> {
             }
         });
         Ok(Self {
-            socket,
+            transport,
             secure,
             connections,
             heartbeat_handle,
@@ -106,8 +107,8 @@ impl<C: Crypto> Server<C> {
 
     pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<Option<([u8; UID_LEN], u64)>, CsError> {
         buf.clear();
-        buf.reserve(1500);
-        let (len, addr) = self.socket.recv_buf_from(buf).await?;
+        buf.reserve(T::BUFFER_SIZE);
+        let (len, addr) = self.transport.recv_buf_from(buf).await?;
         if len == 0 {
             return Err(CsError::InvalidFormat);
         }
@@ -115,7 +116,7 @@ impl<C: Crypto> Server<C> {
             EventType::Hello => {
                 Decoder::hello(buf)?;
                 Encoder::ack_hello::<C>(&self.secure.salt(), buf);
-                self.socket.send_to(buf, addr).await?;
+                self.transport.send_to(buf, addr).await?;
                 Ok(None)
             }
             EventType::Connect => {
@@ -136,7 +137,7 @@ impl<C: Crypto> Server<C> {
                         &uid,
                         buf,
                     )?;
-                    self.socket.send_to(buf, addr).await?;
+                    self.transport.send_to(buf, addr).await?;
                     return Ok(None);
                 }
                 let server_secret = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
@@ -144,7 +145,7 @@ impl<C: Crypto> Server<C> {
                 let shared_secret = server_secret.diffie_hellman(&client_public);
                 let session_crypto = C::new(&hash(shared_secret.as_bytes()))?;
                 Encoder::ack_connect(&*self.secure.crypto(), server_public.as_bytes(), &uid, buf)?;
-                self.socket.send_to(buf, addr).await?;
+                self.transport.send_to(buf, addr).await?;
                 let conn = Connection::new(uid, addr, Arc::new(session_crypto), server_public, ttl);
                 let conn = Arc::new(conn);
                 self.connections.insert(uid, conn);
@@ -167,7 +168,7 @@ impl<C: Crypto> Server<C> {
                         tracing::debug!("Received heartbeat Request");
                         let (session_crypto, count, uid, addr) = conn.pre_encrypt()?;
                         Encoder::ack_heartbeat(&*session_crypto, count, &uid, buf)?;
-                        self.socket.send_to(buf, addr).await?;
+                        self.transport.send_to(buf, addr).await?;
                         Ok(None)
                     }
                     EventType::AckHeartbeat => {
@@ -192,10 +193,10 @@ impl<C: Crypto> Server<C> {
         tokio::time::timeout(timeout, self.recv(buf)).await?
     }
 
-    pub async fn get(&self, uid: &[u8; UID_LEN]) -> Result<Channel<C>, CsError> {
+    pub async fn get(&self, uid: &[u8; UID_LEN]) -> Result<Channel<T, C>, CsError> {
         Ok(Channel {
             conn: Arc::downgrade(&*self.connections.get(uid).ok_or(CsError::ConnectionBroken)?),
-            socket: Arc::downgrade(&self.socket),
+            transport: Arc::downgrade(&self.transport),
         })
     }
 
@@ -207,18 +208,18 @@ impl<C: Crypto> Server<C> {
             buf.clear();
             buf.extend_from_slice(data);
             Encoder::encrypted(&*session_crypto, count, &uid, &mut buf)?;
-            self.socket.send_to(&buf, addr).await?;
+            self.transport.send_to(&buf, addr).await?;
         }
         Ok(())
     }
 }
 
-pub struct Channel<C: Crypto> {
+pub struct Channel<T: Transport, C: Crypto> {
     conn: Weak<Connection<C>>,
-    socket: Weak<UdpSocket>,
+    transport: Weak<T>,
 }
 
-impl<C: Crypto> Channel<C> {
+impl<T: Transport, C: Crypto> Channel<T, C> {
     pub async fn send(&self, buf: &mut Vec<u8>) -> Result<(), CsError> {
         let (session_crypto, count, uid, addr) = self
             .conn
@@ -226,7 +227,7 @@ impl<C: Crypto> Channel<C> {
             .ok_or(CsError::ConnectionBroken)?
             .pre_encrypt()?;
         Encoder::encrypted(&*session_crypto, count, &uid, buf)?;
-        self.socket
+        self.transport
             .upgrade()
             .ok_or(CsError::ConnectionBroken)?
             .send_to(buf, addr)

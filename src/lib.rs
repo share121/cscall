@@ -3,6 +3,7 @@ pub mod coder;
 pub mod connection;
 pub mod crypto;
 pub mod server;
+pub mod transport;
 
 pub const UID_LEN: usize = 16;
 pub const COUNT_LEN: usize = size_of::<u64>();
@@ -39,7 +40,7 @@ pub mod EventType {
 pub enum CsError {
     // IO
     #[error("Failed to send data")]
-    Socket(#[from] std::io::Error),
+    Transport(#[from] std::io::Error),
     #[error("Recv Timeout")]
     RecvTimeout(#[from] tokio::time::error::Elapsed),
 
