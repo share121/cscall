@@ -17,7 +17,7 @@ argon2 = { version = "0.5.3", optional = true }
 bytes = "1.11.0"
 dashmap = "6.1.0"
 rand = "0.8"
-sha2 = "0.10.9"
+sha2 = { version = "0.10.9", optional = true }
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["io-util", "net", "rt", "time"] }
 tracing = "0.1.44"
@@ -25,4 +25,4 @@ x25519-dalek = { version = "2.0.1", optional = true }
 
 [features]
 default = ["aes256gcm"]
-aes256gcm = ["dep:aes-gcm", "dep:argon2", "dep:x25519-dalek"]
+aes256gcm = ["dep:aes-gcm", "dep:argon2", "dep:sha2", "dep:x25519-dalek"]

@@ -11,6 +11,7 @@ impl Crypto for NoCrypto {
     type PublicKey = [u8; 0];
     type SecretKey = [u8; 0];
     type SharedSecret = [u8; 0];
+    type Hash = [u8; 0];
 
     fn new(_: &[u8]) -> Result<Self, CsError> {
         Ok(Self)
@@ -31,6 +32,9 @@ impl Crypto for NoCrypto {
         Ok(([], []))
     }
     fn diffie_hellman(_: Self::SecretKey, _: &[u8]) -> Result<Self::SharedSecret, CsError> {
+        Ok([])
+    }
+    fn hash(_: &[&[u8]]) -> Result<Self::Hash, CsError> {
         Ok([])
     }
 }

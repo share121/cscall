@@ -18,6 +18,7 @@ pub trait Crypto: Send + Sync + 'static {
     type PublicKey: ByteArray;
     type SecretKey: Send;
     type SharedSecret: ByteArray;
+    type Hash: ByteArray;
 
     fn new(key: &[u8]) -> Result<Self, CsError>
     where
@@ -31,12 +32,5 @@ pub trait Crypto: Send + Sync + 'static {
         secret: Self::SecretKey,
         public: &[u8],
     ) -> Result<Self::SharedSecret, CsError>;
-}
-
-pub fn hash(data: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize().into()
+    fn hash(data: &[&[u8]]) -> Result<Self::Hash, CsError>;
 }

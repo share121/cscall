@@ -2,7 +2,7 @@ use crate::{
     COUNT_LEN, CsError, EventType, UID, UID_LEN,
     coder::{Decoder, Encoder},
     connection::Connection,
-    crypto::{Crypto, hash},
+    crypto::Crypto,
     transport::Transport,
 };
 use dashmap::DashMap;
@@ -136,7 +136,7 @@ impl<T: Transport, C: Crypto> Server<T, C> {
                 }
                 let (server_secret, server_public) = C::gen_keypair()?;
                 let shared_secret = C::diffie_hellman(server_secret, client_public.as_ref())?;
-                let session_crypto = C::new(&hash(shared_secret.as_ref()))?;
+                let session_crypto = C::new(C::hash(&[shared_secret.as_ref()])?.as_ref())?;
                 Encoder::ack_connect(&*self.secure.crypto(), &server_public, &uid, buf)?;
                 self.transport.send_to(buf, addr).await?;
                 let conn = Connection::new(uid, addr, Arc::new(session_crypto), server_public, ttl);

@@ -2,6 +2,7 @@ use crate::{CsError, crypto::Crypto};
 use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, Nonce, aead::AeadInPlace};
 use argon2::Argon2;
 use rand::{RngCore, rngs::OsRng};
+use sha2::{Digest, Sha256};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 pub struct Aes256GcmCrypto {
@@ -22,6 +23,7 @@ impl Crypto for Aes256GcmCrypto {
     type PublicKey = [u8; Self::PUB_KEY_LEN];
     type SecretKey = EphemeralSecret;
     type SharedSecret = [u8; 32];
+    type Hash = [u8; 32];
 
     fn new(key: &[u8]) -> Result<Self, CsError> {
         let cipher = Aes256Gcm::new(key.into());
@@ -87,5 +89,13 @@ impl Crypto for Aes256GcmCrypto {
         let public_key = PublicKey::from(public_key);
         let shared_secret = secret.diffie_hellman(&public_key);
         Ok(shared_secret.to_bytes())
+    }
+
+    fn hash(data: &[&[u8]]) -> Result<Self::Hash, CsError> {
+        let mut hasher = Sha256::new();
+        for part in data {
+            hasher.update(part);
+        }
+        Ok(hasher.finalize().into())
     }
 }

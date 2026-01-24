@@ -2,7 +2,7 @@ use crate::{
     CsError, EventType, UID, UID_LEN,
     coder::{Decoder, Encoder},
     connection::Connection,
-    crypto::{Crypto, hash},
+    crypto::Crypto,
     transport::Transport,
 };
 use rand::{RngCore, rngs::OsRng};
@@ -125,7 +125,7 @@ impl<T: Transport, C: Crypto> Client<T, C> {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             };
             let shared_secret = C::diffie_hellman(client_secret, server_public.as_ref())?;
-            let session_crypto = C::new(&hash(shared_secret.as_ref()))?;
+            let session_crypto = C::new(C::hash(&[shared_secret.as_ref()])?.as_ref())?;
             conn.replace(
                 uid,
                 target,
