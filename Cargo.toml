@@ -14,7 +14,6 @@ homepage = "https://github.com/share121/cscall"
 [dependencies]
 aes-gcm = { version = "0.10.3", optional = true }
 argon2 = { version = "0.5.3", optional = true }
-bytes = "1.11.0"
 dashmap = "6.1.0"
 rand = "0.8"
 sha2 = { version = "0.10.9", optional = true }
@@ -24,6 +23,6 @@ tracing = "0.1.44"
 x25519-dalek = { version = "2.0.1", optional = true }
 
 [features]
-default = []
+default = ["aes256gcm", "tokio_udp"]
 aes256gcm = ["dep:aes-gcm", "dep:argon2", "dep:sha2", "dep:x25519-dalek"]
 tokio_udp = ["tokio/io-util", "tokio/net"]

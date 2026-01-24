@@ -16,7 +16,7 @@ pub trait Crypto: Send + Sync + 'static {
     type Salt: ByteArray;
     type Key: ByteArray;
     type PublicKey: ByteArray;
-    type SecretKey: Send;
+    type SecretKey;
     type SharedSecret: ByteArray;
     type Hash: ByteArray;
 

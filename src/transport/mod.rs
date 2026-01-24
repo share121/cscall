@@ -1,5 +1,4 @@
 use crate::CsError;
-use bytes::BufMut;
 use std::net::SocketAddr;
 
 #[cfg(feature = "tokio_udp")]
@@ -15,6 +14,6 @@ pub trait Transport: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), CsError>> + Send;
     fn recv_buf_from(
         &self,
-        buf: &mut (impl BufMut + Send),
+        buf: &mut Vec<u8>,
     ) -> impl Future<Output = Result<(usize, SocketAddr), CsError>> + Send;
 }
