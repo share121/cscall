@@ -2,7 +2,8 @@ use crate::CsError;
 use bytes::BufMut;
 use std::net::SocketAddr;
 
-pub mod udp;
+#[cfg(feature = "tokio_udp")]
+pub mod tokio_udp;
 
 pub trait Transport: Send + Sync + 'static {
     const BUFFER_SIZE: usize;

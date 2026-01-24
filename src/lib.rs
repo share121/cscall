@@ -1,5 +1,6 @@
 pub mod client;
 pub mod coder;
+pub mod congestion;
 pub mod connection;
 pub mod crypto;
 pub mod server;
