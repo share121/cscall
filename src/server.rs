@@ -183,7 +183,9 @@ impl<T: Transport, C: Crypto> Server<T, C> {
         buf: &mut Vec<u8>,
         timeout: Duration,
     ) -> Result<Option<(UID, u64)>, CsError> {
-        tokio::time::timeout(timeout, self.recv(buf)).await?
+        tokio::time::timeout(timeout, self.recv(buf))
+            .await
+            .or(Err(CsError::RecvTimeout))?
     }
 
     pub async fn get(&self, uid: &UID) -> Result<Channel<T, C>, CsError> {

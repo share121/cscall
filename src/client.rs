@@ -11,10 +11,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::{
-    task::JoinHandle,
-    time::{Instant, timeout},
-};
+use tokio::{task::JoinHandle, time::Instant};
 
 #[derive(Clone)]
 pub struct ClientConfig<T: Transport> {
@@ -22,6 +19,7 @@ pub struct ClientConfig<T: Transport> {
     pub target: SocketAddr,
     pub ttl: Duration,
     pub pwd: Arc<[u8]>,
+    pub handshake_timeout: Duration,
 }
 
 pub struct Client<T: Transport, C: Crypto> {
@@ -37,6 +35,55 @@ impl<T: Transport, C: Crypto> Drop for Client<T, C> {
     }
 }
 
+#[macro_export]
+macro_rules! recv_until {
+    (
+        transport: $transport:expr,
+        target: $target:expr,
+        buf: $buf:ident,
+        timeout: $timeout:expr,
+        max_retries: $max_retries:expr,
+        prepare: |$send_buf:ident| $prepare_block:block,
+        validate: |$recv_data:ident| $validate_block:block
+    ) => {{
+        let mut attempts = 0;
+        let delay = Duration::from_millis(100);
+        loop {
+            if let Some(max) = $max_retries {
+                if attempts > max {
+                    break Err(CsError::RecvTimeout);
+                }
+                attempts += 1;
+            }
+            $buf.clear();
+            let data = {
+                let $send_buf = &mut $buf;
+                $prepare_block
+            };
+            if let Err(e) = $transport.send_to(data.as_ref(), $target).await {
+                tracing::warn!("Failed to send packet: {:?}", e);
+            } else {
+                $buf.clear();
+                match tokio::time::timeout($timeout, $transport.recv_buf_from(&mut $buf)).await {
+                    Ok(Ok(addr)) if addr == $target => {
+                        let $recv_data = &mut $buf;
+                        match $validate_block {
+                            Ok(res) => break Ok(res),
+                            Err(e) => tracing::warn!("recv validation error: {:?}", e),
+                        }
+                    }
+                    Ok(Ok(addr)) => {
+                        tracing::warn!("Received packet from unexpected address: {}", addr)
+                    }
+                    Ok(Err(e)) => tracing::warn!("Failed to receive packet: {:?}", e),
+                    Err(_) => tracing::warn!("Receive packet timed out"),
+                }
+            }
+            tokio::time::sleep(delay).await;
+        }
+    }};
+}
+
 impl<T: Transport, C: Crypto> Client<T, C> {
     pub async fn connect(
         conn: &Arc<Connection<C>>,
@@ -44,36 +91,17 @@ impl<T: Transport, C: Crypto> Client<T, C> {
         last_send: Arc<Mutex<Instant>>,
     ) -> Result<JoinHandle<()>, CsError> {
         let mut buf = Vec::with_capacity(T::BUFFER_SIZE);
-        let transport = &config.transport;
-        let target = config.target;
-        'outer: loop {
+        loop {
             // 发送 Hello 直到服务器回应 AckHello 并解析 server_salt
-            let server_salt = loop {
-                match transport.send_to(&Encoder::hello(), target).await {
-                    Err(e) => tracing::warn!("Failed to send Hello: {e:?}"),
-                    Ok(_) => {
-                        buf.clear();
-                        match timeout(Duration::from_secs(10), transport.recv_buf_from(&mut buf))
-                            .await
-                        {
-                            Err(e) => tracing::warn!("Failed to receive AckHello Timeout: {e:?}"),
-                            Ok(Err(e)) => tracing::warn!("Failed to receive AckHello: {e:?}"),
-                            Ok(Ok(addr)) if addr != target => {
-                                tracing::warn!("Received AckHello from unexpected address: {addr}")
-                            }
-                            Ok(Ok(_)) => match Decoder::ack_hello::<C>(&buf) {
-                                Ok(s) => break s,
-                                Err(e) => tracing::warn!(
-                                    "Expected AckHello but received: {:?} Error: {:?}",
-                                    buf,
-                                    e
-                                ),
-                            },
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            };
+            let server_salt = recv_until!(
+                transport: &config.transport,
+                target: config.target,
+                buf: buf,
+                timeout: config.handshake_timeout,
+                max_retries: None,
+                prepare: |_buf| { Encoder::hello() },
+                validate: |buf| { Decoder::ack_hello::<C>(buf) }
+            )?;
             // 生成 client_pub 并用 server_key 加密后发送 Connect 请求
             let (client_secret, client_public) = C::gen_keypair()?;
             let server_crypto = tokio::task::spawn_blocking({
@@ -87,48 +115,28 @@ impl<T: Transport, C: Crypto> Client<T, C> {
             // 发送 Connect 请求，并使用 server_crypto 加密，服务器返回的数据用 server_crypto 验证 AckConnect
             let mut uid = [0u8; UID_LEN];
             OsRng.fill_bytes(&mut uid);
-            let mut connect_attempts = 0;
-            let server_public = loop {
-                Encoder::connect(&server_crypto, &client_public, config.ttl, &uid, &mut buf)?;
-                if connect_attempts > 5 {
-                    tracing::warn!("Too many failed connection attempts");
-                    continue 'outer;
-                }
-                connect_attempts += 1;
-                match transport.send_to(&buf, target).await {
-                    Err(e) => tracing::warn!("Failed to send Connect: {e:?}"),
-                    Ok(_) => {
-                        buf.clear();
-                        match timeout(Duration::from_secs(10), transport.recv_buf_from(&mut buf))
-                            .await
-                        {
-                            Err(e) => tracing::warn!("Failed to receive AckConnect Timeout: {e:?}"),
-                            Ok(Err(e)) => tracing::warn!("Failed to receive AckConnect: {e:?}"),
-                            Ok(Ok(addr)) if addr != target => {
-                                tracing::warn!(
-                                    "Received AckConnect from unexpected address: {addr}"
-                                );
-                            }
-                            Ok(Ok(_)) => {
-                                match Decoder::ack_connect(&server_crypto, &uid, &mut buf) {
-                                    Ok(server_public) => break server_public,
-                                    Err(e) => tracing::warn!(
-                                        "Expected AckConnect but received: {:?} Error: {:?}",
-                                        buf,
-                                        e
-                                    ),
-                                };
-                            }
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            let server_public = recv_until!(
+                transport: &config.transport,
+                target: config.target,
+                buf: buf,
+                timeout: config.handshake_timeout,
+                max_retries: Some(5),
+                prepare: |buf| {
+                    Encoder::connect(&server_crypto, &client_public, config.ttl, &uid, buf)?;
+                    buf
+                },
+                validate: |buf| { Decoder::ack_connect(&server_crypto, &uid, buf) }
+            );
+            let server_public = match server_public {
+                Err(CsError::RecvTimeout) => continue,
+                Err(e) => return Err(e),
+                Ok(public) => public,
             };
             let shared_secret = C::diffie_hellman(client_secret, server_public.as_ref())?;
             let session_crypto = C::new(C::hash(&[shared_secret.as_ref()])?.as_ref())?;
             conn.replace(
                 uid,
-                target,
+                config.target,
                 Arc::new(session_crypto),
                 server_public,
                 config.ttl,
@@ -136,7 +144,7 @@ impl<T: Transport, C: Crypto> Client<T, C> {
             *last_send.lock().unwrap() = Instant::now();
             let heartbeat_handle = tokio::spawn({
                 let conn = conn.clone();
-                let transport = transport.clone();
+                let transport = config.transport.clone();
                 let gap = Duration::from_secs(1).min(config.ttl / 2);
                 async move {
                     let mut buf = Vec::with_capacity(T::BUFFER_SIZE);
@@ -175,7 +183,10 @@ impl<T: Transport, C: Crypto> Client<T, C> {
     pub async fn reconnect(&self) -> Result<(), CsError> {
         self.close();
         let handle = Self::connect(&self.conn, &self.config, self.last_send.clone()).await?;
-        self.heartbeat_handle.lock().unwrap().replace(handle);
+        let old = self.heartbeat_handle.lock().unwrap().replace(handle);
+        if let Some(old_handle) = old {
+            old_handle.abort();
+        }
         Ok(())
     }
 
@@ -232,7 +243,9 @@ impl<T: Transport, C: Crypto> Client<T, C> {
         buf: &mut Vec<u8>,
         timeout: Duration,
     ) -> Result<Option<(UID, u64)>, CsError> {
-        tokio::time::timeout(timeout, self.recv(buf)).await?
+        tokio::time::timeout(timeout, self.recv(buf))
+            .await
+            .or(Err(CsError::RecvTimeout))?
     }
 }
 

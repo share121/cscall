@@ -43,7 +43,7 @@ pub enum CsError {
     #[error("Failed to send data")]
     Transport(#[from] std::io::Error),
     #[error("Recv Timeout")]
-    RecvTimeout(#[from] tokio::time::error::Elapsed),
+    RecvTimeout,
 
     // 加解密
     #[error("Failed to crypto")]
