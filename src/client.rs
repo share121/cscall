@@ -58,7 +58,7 @@ impl<T: Transport, C: Crypto> Client<T, C> {
                         {
                             Err(e) => tracing::warn!("Failed to receive AckHello Timeout: {e:?}"),
                             Ok(Err(e)) => tracing::warn!("Failed to receive AckHello: {e:?}"),
-                            Ok(Ok((_, addr))) if addr != target => {
+                            Ok(Ok(addr)) if addr != target => {
                                 tracing::warn!("Received AckHello from unexpected address: {addr}")
                             }
                             Ok(Ok(_)) => match Decoder::ack_hello::<C>(&buf) {
@@ -104,7 +104,7 @@ impl<T: Transport, C: Crypto> Client<T, C> {
                         {
                             Err(e) => tracing::warn!("Failed to receive AckConnect Timeout: {e:?}"),
                             Ok(Err(e)) => tracing::warn!("Failed to receive AckConnect: {e:?}"),
-                            Ok(Ok((_, addr))) if addr != target => {
+                            Ok(Ok(addr)) if addr != target => {
                                 tracing::warn!(
                                     "Received AckConnect from unexpected address: {addr}"
                                 );
@@ -190,14 +190,14 @@ impl<T: Transport, C: Crypto> Client<T, C> {
     pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<Option<(UID, u64)>, CsError> {
         buf.clear();
         buf.reserve(T::BUFFER_SIZE);
-        let (len, addr) = self.config.transport.recv_buf_from(buf).await?;
+        let addr = self.config.transport.recv_buf_from(buf).await?;
         if addr != self.config.target {
             return Err(CsError::InvalidFormat);
         }
-        if len == 0 {
+        if buf.is_empty() {
             return Err(CsError::InvalidFormat);
         }
-        match buf[len - 1] {
+        match *buf.last().unwrap() {
             event_type
             @ (EventType::Encrypted | EventType::Heartbeat | EventType::AckHeartbeat) => {
                 let session_crypto = self.conn.session_crypto()?;

@@ -15,5 +15,5 @@ pub trait Transport: Send + Sync + 'static {
     fn recv_buf_from(
         &self,
         buf: &mut Vec<u8>,
-    ) -> impl Future<Output = Result<(usize, SocketAddr), CsError>> + Send;
+    ) -> impl Future<Output = Result<SocketAddr, CsError>> + Send;
 }

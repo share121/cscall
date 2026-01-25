@@ -10,8 +10,8 @@ impl Transport for UdpSocket {
         Ok(())
     }
 
-    async fn recv_buf_from(&self, buf: &mut Vec<u8>) -> Result<(usize, SocketAddr), CsError> {
-        let (size, addr) = self.recv_buf_from(buf).await?;
-        Ok((size, addr))
+    async fn recv_buf_from(&self, buf: &mut Vec<u8>) -> Result<SocketAddr, CsError> {
+        let (_, addr) = self.recv_buf_from(buf).await?;
+        Ok(addr)
     }
 }

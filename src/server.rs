@@ -107,11 +107,11 @@ impl<T: Transport, C: Crypto> Server<T, C> {
     pub async fn recv(&self, buf: &mut Vec<u8>) -> Result<Option<(UID, u64)>, CsError> {
         buf.clear();
         buf.reserve(T::BUFFER_SIZE);
-        let (len, addr) = self.transport.recv_buf_from(buf).await?;
-        if len == 0 {
+        let addr = self.transport.recv_buf_from(buf).await?;
+        if buf.is_empty() {
             return Err(CsError::InvalidFormat);
         }
-        match buf[len - 1] {
+        match *buf.last().unwrap() {
             EventType::Hello => {
                 Decoder::hello(buf)?;
                 Encoder::ack_hello::<C>(&self.secure.salt(), buf);
