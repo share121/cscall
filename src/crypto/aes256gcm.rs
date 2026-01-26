@@ -1,5 +1,5 @@
-use crate::{CsError, crypto::Crypto};
-use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, Nonce, aead::AeadInPlace};
+use crate::{COUNT_LEN, CsError, crypto::Crypto};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::AeadInPlace};
 use argon2::Argon2;
 use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
@@ -53,17 +53,24 @@ impl Crypto for Aes256GcmCrypto {
     }
 
     /// Return [Ciphertext + Tag] + [Nonce]
-    fn encrypt(&self, associated_data: &[u8], buf: &mut Vec<u8>) -> Result<(), CsError> {
-        let nonce = Aes256Gcm::generate_nonce(OsRng);
+    fn encrypt(
+        &self,
+        count: u64,
+        associated_data: &[u8],
+        buf: &mut Vec<u8>,
+    ) -> Result<(), CsError> {
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        nonce_bytes[..COUNT_LEN].copy_from_slice(&count.to_le_bytes());
         buf.reserve(Self::ADDITION_LEN);
+        let nonce = Nonce::from_slice(&nonce_bytes);
         self.cipher
-            .encrypt_in_place(&nonce, associated_data, buf)
+            .encrypt_in_place(nonce, associated_data, buf)
             .or(Err(CsError::Crypto))?;
-        buf.extend_from_slice(&nonce);
+        buf.extend_from_slice(nonce);
         Ok(())
     }
 
-    fn decrypt(&self, associated_data: &[u8], buf: &mut Vec<u8>) -> Result<(), CsError> {
+    fn decrypt(&self, associated_data: &[u8], buf: &mut Vec<u8>) -> Result<u64, CsError> {
         if buf.len() < Self::ADDITION_LEN {
             return Err(CsError::Crypto);
         }
@@ -72,7 +79,9 @@ impl Crypto for Aes256GcmCrypto {
         buf.truncate(nonce_start);
         self.cipher
             .decrypt_in_place(&nonce, associated_data, buf)
-            .or(Err(CsError::Crypto))
+            .or(Err(CsError::Crypto))?;
+        let count = u64::from_le_bytes(nonce[..COUNT_LEN].try_into().unwrap());
+        Ok(count)
     }
 
     fn gen_keypair() -> Result<(Self::SecretKey, Self::PublicKey), CsError> {

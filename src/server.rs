@@ -195,17 +195,26 @@ impl<T: Transport, C: Crypto> Server<T, C> {
         })
     }
 
-    pub async fn send_all(&self, data: &[u8]) -> Result<(), CsError> {
+    pub async fn send_all(&self, data: &[u8]) {
         let conns: Vec<Arc<Connection<C>>> = self.connections.iter().map(|c| c.clone()).collect();
-        let mut buf = Vec::with_capacity(data.len() + COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
+        let mut tasks = tokio::task::JoinSet::new();
         for conn in conns {
-            let (session_crypto, count, uid, addr) = conn.pre_encrypt()?;
-            buf.clear();
+            let mut buf =
+                Vec::with_capacity(data.len() + COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
             buf.extend_from_slice(data);
-            Encoder::encrypted(&*session_crypto, count, &uid, &mut buf)?;
-            self.transport.send_to(&buf, addr).await?;
+            let transport = self.transport.clone();
+            tasks.spawn(async move {
+                let (session_crypto, count, uid, addr) = conn.pre_encrypt()?;
+                Encoder::encrypted(&*session_crypto, count, &uid, &mut buf)?;
+                transport.send_to(&buf, addr).await?;
+                Ok::<_, CsError>(())
+            });
         }
-        Ok(())
+        while let Some(result) = tasks.join_next().await {
+            if let Err(e) = result {
+                tracing::error!("Failed to send message: {}", e);
+            };
+        }
     }
 }
 

@@ -1,4 +1,6 @@
-use crate::{COUNT_LEN, CsError, EventType, TIMESTAMP_LEN, UID, UID_LEN, crypto::Crypto};
+use rand::{RngCore, rngs::OsRng};
+
+use crate::{CsError, EventType, TIMESTAMP_LEN, UID, UID_LEN, crypto::Crypto};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub fn build_associated_data(uid: &UID, event_type: u8) -> [u8; UID_LEN + 1] {
@@ -10,17 +12,16 @@ pub fn build_associated_data(uid: &UID, event_type: u8) -> [u8; UID_LEN + 1] {
 
 pub struct Encoder;
 impl Encoder {
-    /// SessionKey(PlainText + Count) + Uid + Encrypted
+    /// SessionKey(PlainText) + Uid + Encrypted
     pub fn encrypted<C: Crypto>(
         session_crypto: &C,
         count: u64,
         uid: &UID,
         buf: &mut Vec<u8>,
     ) -> Result<(), CsError> {
-        buf.reserve(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
-        buf.extend_from_slice(&count.to_le_bytes());
+        buf.reserve(C::ADDITION_LEN + UID_LEN + 1);
         let associated_data = build_associated_data(uid, EventType::Encrypted);
-        session_crypto.encrypt(&associated_data, buf)?;
+        session_crypto.encrypt(count, &associated_data, buf)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::Encrypted);
         Ok(())
@@ -59,7 +60,8 @@ impl Encoder {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         buf.extend_from_slice(&timestamp.to_le_bytes());
         buf.extend_from_slice(uid);
-        server_crypto.encrypt(&[EventType::Connect], buf)?;
+        let count = OsRng.next_u64();
+        server_crypto.encrypt(count, &[EventType::Connect], buf)?;
         buf.push(EventType::Connect);
         Ok(())
     }
@@ -76,12 +78,13 @@ impl Encoder {
         buf.reserve(server_pub.len() + C::ADDITION_LEN + 1);
         buf.extend_from_slice(server_pub);
         let associated_data = build_associated_data(uid, EventType::AckConnect);
-        server_crypto.encrypt(&associated_data, buf)?;
+        let count = OsRng.next_u64();
+        server_crypto.encrypt(count, &associated_data, buf)?;
         buf.push(EventType::AckConnect);
         Ok(())
     }
 
-    /// SessionKey(Count) + Uid + Heartbeat
+    /// SessionKey() + Uid + Heartbeat
     pub fn heartbeat<C: Crypto>(
         session_crypto: &C,
         count: u64,
@@ -89,16 +92,15 @@ impl Encoder {
         buf: &mut Vec<u8>,
     ) -> Result<(), CsError> {
         buf.clear();
-        buf.reserve(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
-        buf.extend_from_slice(&count.to_le_bytes());
+        buf.reserve(C::ADDITION_LEN + UID_LEN + 1);
         let associated_data = build_associated_data(uid, EventType::Heartbeat);
-        session_crypto.encrypt(&associated_data, buf)?;
+        session_crypto.encrypt(count, &associated_data, buf)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::Heartbeat);
         Ok(())
     }
 
-    /// SessionKey(Count) + Uid + AckHeartbeat
+    /// SessionKey() + Uid + AckHeartbeat
     pub fn ack_heartbeat<C: Crypto>(
         session_crypto: &C,
         count: u64,
@@ -106,10 +108,9 @@ impl Encoder {
         buf: &mut Vec<u8>,
     ) -> Result<(), CsError> {
         buf.clear();
-        buf.reserve(COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1);
-        buf.extend_from_slice(&count.to_le_bytes());
+        buf.reserve(C::ADDITION_LEN + UID_LEN + 1);
         let associated_data = build_associated_data(uid, EventType::AckHeartbeat);
-        session_crypto.encrypt(&associated_data, buf)?;
+        session_crypto.encrypt(count, &associated_data, buf)?;
         buf.extend_from_slice(uid);
         buf.push(EventType::AckHeartbeat);
         Ok(())
@@ -127,7 +128,7 @@ impl Decoder {
         Ok(uid)
     }
 
-    /// SessionKey(PlainText + Count) + Uid + Encrypted|Heartbeat|AckHeartbeat
+    /// SessionKey(PlainText) + Uid + Encrypted|Heartbeat|AckHeartbeat
     /// Plaintext 留在 buf 中
     /// Return: (Count, Uid)
     pub fn encrypted<C: Crypto>(
@@ -140,23 +141,18 @@ impl Decoder {
         ) {
             return Err(CsError::InvalidType(buf.last().cloned()));
         }
-        if buf.len() < COUNT_LEN + C::ADDITION_LEN + UID_LEN + 1 {
+        if buf.len() < C::ADDITION_LEN + UID_LEN + 1 {
             return Err(CsError::InvalidFormat);
         }
         let event_type = buf.pop().unwrap();
 
-        // 提取 Uid (外部)
+        // 提取 Uid
         let uid_start = buf.len() - UID_LEN;
         let uid: UID = buf[uid_start..].try_into().unwrap();
         buf.truncate(uid_start);
 
         let associated_data = build_associated_data(&uid, event_type);
-        session_crypto.decrypt(&associated_data, buf)?;
-
-        // 解析 Count
-        let count_start = buf.len() - COUNT_LEN;
-        let count = u64::from_le_bytes(buf[count_start..].try_into().unwrap());
-        buf.truncate(count_start);
+        let count = session_crypto.decrypt(&associated_data, buf)?;
 
         Ok((count, uid))
     }

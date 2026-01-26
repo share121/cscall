@@ -25,8 +25,9 @@ pub trait Crypto: Send + Sync + 'static {
         Self: Sized;
     fn gen_salt() -> Result<Self::Salt, CsError>;
     fn derive_key(pwd: &[u8], salt: &[u8]) -> Result<Self::Key, CsError>;
-    fn encrypt(&self, associated_data: &[u8], buf: &mut Vec<u8>) -> Result<(), CsError>;
-    fn decrypt(&self, associated_data: &[u8], buf: &mut Vec<u8>) -> Result<(), CsError>;
+    fn encrypt(&self, count: u64, associated_data: &[u8], buf: &mut Vec<u8>)
+    -> Result<(), CsError>;
+    fn decrypt(&self, associated_data: &[u8], buf: &mut Vec<u8>) -> Result<u64, CsError>;
     fn gen_keypair() -> Result<(Self::SecretKey, Self::PublicKey), CsError>;
     fn diffie_hellman(
         secret: Self::SecretKey,

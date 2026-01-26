@@ -14,7 +14,7 @@ pub type UID = [u8; UID_LEN];
 
 #[allow(non_snake_case, non_upper_case_globals)]
 pub mod EventType {
-    /// SessionKey(PlainText + Count) + Uid + Encrypted
+    /// SessionKey(PlainText) + Uid + Encrypted
     pub const Encrypted: u8 = 1;
 
     /// 63个0 + Hello
@@ -30,10 +30,10 @@ pub mod EventType {
     /// ServerKey(ServerPub) + AckConnect
     pub const AckConnect: u8 = 5;
 
-    /// SessionKey(Count) + Uid + Heartbeat
+    /// SessionKey() + Uid + Heartbeat
     pub const Heartbeat: u8 = 6;
 
-    /// SessionKey(Count) + Uid + AckHeartbeat
+    /// SessionKey() + Uid + AckHeartbeat
     pub const AckHeartbeat: u8 = 7;
 }
 
