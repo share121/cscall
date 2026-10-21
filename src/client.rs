@@ -133,11 +133,15 @@ impl<T: Transport, C: Crypto> Client<T, C> {
                 Ok(public) => public,
             };
             let shared_secret = C::diffie_hellman(client_secret, server_public.as_ref())?;
-            let session_crypto = C::new(C::hash(&[shared_secret.as_ref()])?.as_ref())?;
+            // One key per direction. Both sides send from count 1, so sharing a
+            // key would reuse the same key/nonce pair for both directions.
+            let send_crypto = C::new(C::hash(&[shared_secret.as_ref(), b"cscall c2s"])?.as_ref())?;
+            let recv_crypto = C::new(C::hash(&[shared_secret.as_ref(), b"cscall s2c"])?.as_ref())?;
             conn.replace(
                 uid,
                 config.target,
-                Arc::new(session_crypto),
+                Arc::new(send_crypto),
+                Arc::new(recv_crypto),
                 server_public,
                 config.ttl,
             )?;
@@ -211,8 +215,8 @@ impl<T: Transport, C: Crypto> Client<T, C> {
         match *buf.last().unwrap() {
             event_type
             @ (EventType::Encrypted | EventType::Heartbeat | EventType::AckHeartbeat) => {
-                let session_crypto = self.conn.session_crypto()?;
-                let (count, uid) = Decoder::encrypted(&*session_crypto, buf)?;
+                let recv_crypto = self.conn.recv_crypto()?;
+                let (count, uid) = Decoder::encrypted(&*recv_crypto, buf)?;
                 self.conn.check_and_update(count, uid, None)?;
                 match event_type {
                     EventType::Encrypted => Ok(Some((uid, count))),

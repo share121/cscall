@@ -136,10 +136,22 @@ impl<T: Transport, C: Crypto> Server<T, C> {
                 }
                 let (server_secret, server_public) = C::gen_keypair()?;
                 let shared_secret = C::diffie_hellman(server_secret, client_public.as_ref())?;
-                let session_crypto = C::new(C::hash(&[shared_secret.as_ref()])?.as_ref())?;
+                // Mirror of the client: the server sends with s2c and receives
+                // with c2s so the two directions never share a key/nonce pair.
+                let send_crypto =
+                    C::new(C::hash(&[shared_secret.as_ref(), b"cscall s2c"])?.as_ref())?;
+                let recv_crypto =
+                    C::new(C::hash(&[shared_secret.as_ref(), b"cscall c2s"])?.as_ref())?;
                 Encoder::ack_connect(&*self.secure.crypto(), &server_public, &uid, buf)?;
                 self.transport.send_to(buf, addr).await?;
-                let conn = Connection::new(uid, addr, Arc::new(session_crypto), server_public, ttl);
+                let conn = Connection::new(
+                    uid,
+                    addr,
+                    Arc::new(send_crypto),
+                    Arc::new(recv_crypto),
+                    server_public,
+                    ttl,
+                );
                 let conn = Arc::new(conn);
                 self.connections.insert(uid, conn);
                 Ok(None)
@@ -152,8 +164,8 @@ impl<T: Transport, C: Crypto> Server<T, C> {
                     .get(&uid)
                     .ok_or(CsError::ConnectionBroken)?
                     .clone();
-                let session_crypto = conn.session_crypto()?;
-                let (count, uid) = Decoder::encrypted(&*session_crypto, buf)?;
+                let recv_crypto = conn.recv_crypto()?;
+                let (count, uid) = Decoder::encrypted(&*recv_crypto, buf)?;
                 conn.check_and_update(count, uid, Some(addr))?;
                 match event_type {
                     EventType::Encrypted => Ok(Some((uid, count))),

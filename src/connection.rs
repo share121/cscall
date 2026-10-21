@@ -12,7 +12,8 @@ pub struct ConnectionInner<C: Crypto> {
     pub count: u64,
     pub max_count: u64,
     pub replay_bitmap: u128,
-    pub session_crypto: Arc<C>,
+    pub send_crypto: Arc<C>,
+    pub recv_crypto: Arc<C>,
     pub last_recv: Instant,
     pub ttl: Duration,
     pub server_public: C::PublicKey,
@@ -22,14 +23,16 @@ impl<C: Crypto> ConnectionInner<C> {
     pub fn new(
         uid: UID,
         addr: SocketAddr,
-        session_crypto: Arc<C>,
+        send_crypto: Arc<C>,
+        recv_crypto: Arc<C>,
         server_public: C::PublicKey,
         ttl: Duration,
     ) -> Self {
         Self {
             uid,
             addr,
-            session_crypto,
+            send_crypto,
+            recv_crypto,
             server_public,
             ttl,
             last_recv: Instant::now(),
@@ -39,11 +42,11 @@ impl<C: Crypto> ConnectionInner<C> {
         }
     }
 
-    /// Return: (session_crypto, count, uid, addr)
+    /// Return: (send_crypto, count, uid, addr)
     pub fn pre_encrypt(&mut self) -> (Arc<C>, u64, UID, SocketAddr) {
         let count = self.count;
         self.count += 1;
-        (self.session_crypto.clone(), count, self.uid, self.addr)
+        (self.send_crypto.clone(), count, self.uid, self.addr)
     }
 
     pub fn check_and_update(
@@ -99,11 +102,12 @@ impl<C: Crypto> Connection<C> {
     pub fn new(
         uid: UID,
         addr: SocketAddr,
-        session_crypto: Arc<C>,
+        send_crypto: Arc<C>,
+        recv_crypto: Arc<C>,
         server_public: C::PublicKey,
         ttl: Duration,
     ) -> Self {
-        let conn = ConnectionInner::new(uid, addr, session_crypto, server_public, ttl);
+        let conn = ConnectionInner::new(uid, addr, send_crypto, recv_crypto, server_public, ttl);
         Self {
             inner: Mutex::new(Some(conn)),
         }
@@ -126,16 +130,17 @@ impl<C: Crypto> Connection<C> {
         &self,
         uid: UID,
         addr: SocketAddr,
-        session_crypto: Arc<C>,
+        send_crypto: Arc<C>,
+        recv_crypto: Arc<C>,
         server_public: C::PublicKey,
         ttl: Duration,
     ) -> Result<(), CsError> {
-        let conn = ConnectionInner::new(uid, addr, session_crypto, server_public, ttl);
+        let conn = ConnectionInner::new(uid, addr, send_crypto, recv_crypto, server_public, ttl);
         self.inner()?.replace(conn);
         Ok(())
     }
 
-    /// Return: (session_crypto, count, uid, addr)
+    /// Return: (send_crypto, count, uid, addr)
     pub fn pre_encrypt(&self) -> Result<(Arc<C>, u64, UID, SocketAddr), CsError> {
         self.with(|c| c.pre_encrypt())
     }
@@ -149,8 +154,8 @@ impl<C: Crypto> Connection<C> {
         self.with(|c| c.check_and_update(count, uid, addr))?
     }
 
-    pub fn session_crypto(&self) -> Result<Arc<C>, CsError> {
-        self.with(|c| c.session_crypto.clone())
+    pub fn recv_crypto(&self) -> Result<Arc<C>, CsError> {
+        self.with(|c| c.recv_crypto.clone())
     }
 
     pub fn server_public(&self) -> Result<C::PublicKey, CsError> {
