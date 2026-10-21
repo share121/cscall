@@ -121,7 +121,7 @@ impl<T: Transport, C: Crypto> Server<T, C> {
             EventType::Connect => {
                 let (client_public, ttl, old, uid) = Decoder::connect(&*self.secure.crypto(), buf)?;
                 let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-                if old.abs_diff(now) > (ttl.as_secs() * 2 / 3).min(60) {
+                if old.abs_diff(now) > ttl.as_secs().min(90) * 2 / 3 {
                     return Err(CsError::InvalidTimestamp(old));
                 }
                 if let Ok(server_public) = self
@@ -249,5 +249,44 @@ impl<T: Transport, C: Crypto> Channel<T, C> {
             .send_to(buf, addr)
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "tokio_udp"))]
+mod tests {
+    use super::*;
+    use crate::{coder::Encoder, crypto::nocrypto::NoCrypto};
+    use tokio::net::UdpSocket;
+
+    #[test]
+    fn connect_with_maximum_ttl_does_not_overflow() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let server_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let client_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let server = Server::<_, NoCrypto>::new(Arc::from([]), server_socket.clone())
+                .await
+                .unwrap();
+            let mut packet = Vec::new();
+            Encoder::connect(
+                &NoCrypto,
+                &[],
+                Duration::from_secs(u64::MAX),
+                &[1; UID_LEN],
+                &mut packet,
+            )
+            .unwrap();
+            client_socket
+                .send_to(&packet, server_socket.local_addr().unwrap())
+                .await
+                .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(2), server.recv(&mut Vec::new()))
+                .await
+                .unwrap();
+            assert!(result.is_ok(), "Connect should be accepted: {result:?}");
+        });
     }
 }
